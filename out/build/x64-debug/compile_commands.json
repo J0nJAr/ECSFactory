@@ -1,0 +1,20 @@
+[
+{
+  "directory": "C:/Users/macham/Documents/GitHub/ECSFactory/out/build/x64-debug/EngineCore",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/EngineCore.dir/includes_CXX.rsp -g -std=c++20 -Wall -Wextra -o CMakeFiles\\EngineCore.dir\\Math\\Fixed64.cpp.obj -c C:\\Users\\macham\\Documents\\GitHub\\ECSFactory\\EngineCore\\Math\\Fixed64.cpp",
+  "file": "C:/Users/macham/Documents/GitHub/ECSFactory/EngineCore/Math/Fixed64.cpp",
+  "output": "EngineCore/CMakeFiles/EngineCore.dir/Math/Fixed64.cpp.obj"
+},
+{
+  "directory": "C:/Users/macham/Documents/GitHub/ECSFactory/out/build/x64-debug/GameServer",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/GameServer.dir/includes_CXX.rsp -g -std=c++20 -Wall -Wextra -o CMakeFiles\\GameServer.dir\\main.cpp.obj -c C:\\Users\\macham\\Documents\\GitHub\\ECSFactory\\GameServer\\main.cpp",
+  "file": "C:/Users/macham/Documents/GitHub/ECSFactory/GameServer/main.cpp",
+  "output": "GameServer/CMakeFiles/GameServer.dir/main.cpp.obj"
+},
+{
+  "directory": "C:/Users/macham/Documents/GitHub/ECSFactory/out/build/x64-debug/GameClient",
+  "command": "C:\\msys64\\ucrt64\\bin\\g++.exe  @CMakeFiles/GameClient.dir/includes_CXX.rsp -g -std=c++20 -Wall -Wextra -o CMakeFiles\\GameClient.dir\\main.cpp.obj -c C:\\Users\\macham\\Documents\\GitHub\\ECSFactory\\GameClient\\main.cpp",
+  "file": "C:/Users/macham/Documents/GitHub/ECSFactory/GameClient/main.cpp",
+  "output": "GameClient/CMakeFiles/GameClient.dir/main.cpp.obj"
+}
+]

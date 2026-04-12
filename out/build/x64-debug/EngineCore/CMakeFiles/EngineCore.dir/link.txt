@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc ..\lib\libEngineCore.a CMakeFiles/EngineCore.dir/Math/Fixed64.cpp.obj
+C:\msys64\ucrt64\bin\ranlib.exe ..\lib\libEngineCore.a
