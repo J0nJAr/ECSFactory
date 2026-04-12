@@ -35,6 +35,9 @@ namespace EF {
     inline constexpr uint32_t kEntityVersionBits = 12;
 #endif
 
+    using TypeHash = uint64_t;
+    using TypeIndex = uint32_t;
+
     inline constexpr uint32_t kEntityVersionShift = kEntityIndexBits;
 
     inline constexpr EntityId kEntityIndexMask   = (EntityId(1) << kEntityIndexBits) - 1;

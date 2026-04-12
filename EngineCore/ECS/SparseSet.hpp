@@ -9,12 +9,15 @@
 #include "Base/Assert.hpp"
 
 namespace EF {
-    template<typename TKey, typename TValue>
+
+    template<typename T>
+    concept IsValidSparseSetKey = std::is_integral_v<T> || std::is_enum_v<T>;
+
+    template<IsValidSparseSetKey<TKey>, typename TValue>
     class SparseSet {
         using DenseIndex = std::size_t;
+        // 이넘인경우 underlying type(실제 정수형)으로 변환해서 사용한다. 음수는 허용하지 않는다.
         using KeyIndex = std::conditional_t<std::is_enum_v<TKey>, std::underlying_type_t<TKey>, TKey>;
-
-        static_assert(std::is_integral_v<KeyIndex>, "SparseSet key must be an integral or enum type.");
 
     private:
         static constexpr DenseIndex kInvalidIndex = std::numeric_limits<DenseIndex>::max();
