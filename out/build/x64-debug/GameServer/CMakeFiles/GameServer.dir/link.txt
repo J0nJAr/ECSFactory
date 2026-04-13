@@ -1,3 +1,0 @@
-"C:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\GameServer.dir/objects.a
-C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\GameServer.dir/objects.a @CMakeFiles\GameServer.dir\objects1.rsp
-C:\msys64\ucrt64\bin\g++.exe -g -Wl,--whole-archive CMakeFiles\GameServer.dir/objects.a -Wl,--no-whole-archive -o ..\bin\GameServer.exe -Wl,--out-implib,..\lib\libGameServer.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\GameServer.dir\linkLibs.rsp
