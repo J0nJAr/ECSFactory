@@ -1,0 +1,18 @@
+add_executable(EngineCoreTests
+    main.cpp
+    EntityManagerTests.cpp
+    SparseSetTests.cpp
+    RegistryViewTests.cpp
+)
+
+target_link_libraries(EngineCoreTests PRIVATE EngineCore)
+target_compile_features(EngineCoreTests PRIVATE cxx_std_20)
+
+add_test(NAME EngineCoreTests.All COMMAND EngineCoreTests)
+add_test(NAME EntityManager.DestroyedEntityIsNotAlive COMMAND EngineCoreTests EntityManager.DestroyedEntityIsNotAlive)
+add_test(NAME EntityManager.ReusedIndexGetsNewVersion COMMAND EngineCoreTests EntityManager.ReusedIndexGetsNewVersion)
+add_test(NAME SparseSet.EmplaceAndGetReturnsStoredValue COMMAND EngineCoreTests SparseSet.EmplaceAndGetReturnsStoredValue)
+add_test(NAME SparseSet.RemoveMaintainsAccessToRemainingElements COMMAND EngineCoreTests SparseSet.RemoveMaintainsAccessToRemainingElements)
+add_test(NAME RegistryView.ViewWithRequiredComponentsFiltersEntities COMMAND EngineCoreTests RegistryView.ViewWithRequiredComponentsFiltersEntities)
+add_test(NAME RegistryView.ViewWithoutExcludedComponentsSkipsExcludedEntities COMMAND EngineCoreTests RegistryView.ViewWithoutExcludedComponentsSkipsExcludedEntities)
+add_test(NAME RegistryView.IteratorReturnsEntityIdAndComponentReferences COMMAND EngineCoreTests RegistryView.IteratorReturnsEntityIdAndComponentReferences)

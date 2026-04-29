@@ -8,20 +8,22 @@
 #include <type_traits>
 
 #include "ECS/Core.hpp"
+#include "ECS/FowardDeclare.hpp"
 
 namespace EF {
     template<typename T>
     concept HasCustomTypeName = requires {
+        // T::TypeName이 존재하고, std::string_view로 변환 가능해야 한다.
         { T::TypeName } -> std::convertible_to<std::string_view>;
     };
 
     struct TypeInfo final {
-        TypeHash hash;
-        TypeIndex index;
-        std::string_view name;
-        std::size_t size;
-        std::size_t alignment;
-        bool isTrivial;
+        TypeHash hash; // 컴파일 타임에 계산된 타입 해시값
+        TypeIndex index; // 런타임에 할당된 타입 인덱스(0부터 시작, 배열 인덱스용)
+        std::string_view name; // 디버깅 및 로깅용 타입 이름
+        std::size_t size; // 타입의 크기
+        std::size_t alignment; // 타입의 정렬용 크기
+        bool isTrivial; // 타입이 bit 복사가능한지 여부
 
         auto operator<=>(const TypeInfo&) const = default;
     };
@@ -30,6 +32,8 @@ namespace EF {
     [[nodiscard]] const TypeInfo& GetTypeInfo() noexcept;
 
     namespace Internal {
+
+        // 해당 타입의 이름을 컴파일 타임에 추출하는 함수. const 등 수식어와 참조는 제거한다.
         template<typename T>
         [[nodiscard]] constexpr std::string_view GetPureTypeName() noexcept {
 #if defined(_MSC_VER)

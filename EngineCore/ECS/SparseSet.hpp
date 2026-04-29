@@ -5,19 +5,42 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <span>
 
 #include "Base/Assert.hpp"
+#include "Core.hpp"
 
 namespace EF {
+    namespace Internal {
+        template<typename T, bool IsEnum>
+        struct SparseSetKeyIndexType;
+
+        template<typename T>
+        struct SparseSetKeyIndexType<T, false> {
+            using type = T;
+        };
+
+        template<typename T>
+        struct SparseSetKeyIndexType<T, true> {
+            using type = std::underlying_type_t<T>;
+        };
+    }
 
     template<typename T>
     concept IsValidSparseSetKey = std::is_integral_v<T> || std::is_enum_v<T>;
 
-    template<IsValidSparseSetKey<TKey>, typename TValue>
+    template<IsValidSparseSetKey TKey, typename TValue>
     class SparseSet {
-        using DenseIndex = std::size_t;
+
         // 이넘인경우 underlying type(실제 정수형)으로 변환해서 사용한다. 음수는 허용하지 않는다.
-        using KeyIndex = std::conditional_t<std::is_enum_v<TKey>, std::underlying_type_t<TKey>, TKey>;
+        using KeyIndex = typename Internal::SparseSetKeyIndexType<TKey, std::is_enum_v<TKey>>::type;
+    public:
+        using DenseIndex = std::size_t;
+
+        using DenseContainer = std::vector<TValue>;
+        using EntityContainer = std::vector<TKey>;
+
+
 
     private:
         static constexpr DenseIndex kInvalidIndex = std::numeric_limits<DenseIndex>::max();
@@ -25,11 +48,13 @@ namespace EF {
         //** entity id -> dense index */
         std::vector<DenseIndex> m_sparseIndices;
         //** dense index -> entity id */
-        std::vector<TKey> m_denseKeys;
+        EntityContainer m_denseKeys;
         //** dense index -> value */
-        std::vector<TValue> m_denseValues;
+        DenseContainer m_denseValues;
 
     private:
+
+    
         static DenseIndex ToSparseIndex(TKey key) {
             KeyIndex keyIndex = static_cast<KeyIndex>(key);
 
@@ -113,17 +138,25 @@ namespace EF {
             return &m_denseValues[denseIndex];
         }
 
+        /**
+         * 지정된 키에 해당하는 요소를 제거합니다.
+         * @param key 제거할 요소의 키
+         * @todo None(Entt에서는 Tombstone이라고 불리는) 상태를 지원해서 포인터 안정성 보장할수도 있음
+         */
         void Remove(TKey key) {
             DenseIndex removeDenseIndex;
             if (!TryGetDenseIndex(key, removeDenseIndex)) {
                 return;
             }
 
+            // 가장 마지막 인덱스를 제거할 인덱스에 덮어쓰고, 마지막 요소를 제거하는 방식으로 빠르게 삭제
             DenseIndex lastDenseIndex = m_denseValues.size() - 1;
 
+            // 이미 마지막 요소를 제거하려는 경우는 그냥 제거하도록 if문으로 분기
             if (removeDenseIndex != lastDenseIndex) {
                 TKey movedKey = m_denseKeys[lastDenseIndex];
 
+                // std::move를 사용하여 이동 시도
                 m_denseValues[removeDenseIndex] = std::move(m_denseValues[lastDenseIndex]);
                 m_denseKeys[removeDenseIndex] = movedKey;
                 m_sparseIndices[ToSparseIndex(movedKey)] = removeDenseIndex;
@@ -142,15 +175,21 @@ namespace EF {
             return m_denseValues.empty();
         }
 
-        const std::vector<TKey>& Keys() const noexcept {
+        void Clear() {
+            m_sparseIndices.clear();
+            m_denseKeys.clear();
+            m_denseValues.clear();
+        }
+
+        [[nodiscard]] std::span<const TKey> Keys() const noexcept {
             return m_denseKeys;
         }
 
-        std::vector<TValue>& Values() noexcept {
+        [[nodiscard]] std::span<TValue> Values() noexcept {
             return m_denseValues;
         }
 
-        const std::vector<TValue>& Values() const noexcept {
+        [[nodiscard]] std::span<const TValue> Values() const noexcept {
             return m_denseValues;
         }
     };

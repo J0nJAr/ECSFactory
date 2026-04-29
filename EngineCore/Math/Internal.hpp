@@ -26,7 +26,7 @@ namespace EF::Internal {
         uint64_t low = static_cast<uint64_t>(_umul128(a, b, &high));
         return { high, low };
 #else
-        // fallback: 32ºñÆ® Á¶ÇÕ °ö¼À
+        // fallback: 32ë¹„íŠ¸ ì¡°í•© ê³±ì…ˆ
         const uint64_t a0 = static_cast<uint32_t>(a);
         const uint64_t a1 = a >> 32;
         const uint64_t b0 = static_cast<uint32_t>(b);
@@ -50,7 +50,7 @@ namespace EF::Internal {
             return static_cast<uint64_t>(value);
         }
 
-        // INT64_MINµµ ¾ÈÀüÇÏ°Ô Àı´ñ°ª magnitude·Î º¯È¯
+        // INT64_MINë„ ì•ˆì „í•˜ê²Œ ì ˆëŒ“ê°’ magnitudeë¡œ ë³€í™˜
         return ~static_cast<uint64_t>(value) + 1ull;
     }
 
@@ -93,7 +93,7 @@ namespace EF::Internal {
         uint64_t remainder = 0;
         return _udiv128(high, low, divisor, &remainder);
 #else
-        // ´Ü¼ø long division fallback
+        // ë‹¨ìˆœ long division fallback
         uint64_t quotient = 0;
         uint64_t rem = 0;
 
@@ -131,7 +131,7 @@ namespace EF::Internal {
         const uint64_t a = TwosComplementAbs(lhs);
         const uint64_t b = TwosComplementAbs(rhs);
 
-        // (a << 32)¸¦ 128ºñÆ® [high:low]·Î ±¸¼º
+        // (a << 32)ë¥¼ 128ë¹„íŠ¸ [high:low]ë¡œ êµ¬ì„±
         const uint64_t high = a >> 32;
         const uint64_t low = a << 32;
 

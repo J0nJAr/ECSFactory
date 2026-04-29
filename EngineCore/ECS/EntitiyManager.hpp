@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <vector>
 
@@ -10,6 +10,7 @@ namespace EF {
         EntityId CreateEntity();
         void DestroyEntity(EntityId entity);
         [[nodiscard]] bool IsAlive(EntityId entity) const;
+        [[nodiscard]] EntityId ResolveEntityId(EntityIndex index) const;
 
     private:
         EntityIndex m_nextEntityIndex = 0;
@@ -51,5 +52,13 @@ namespace EF {
         }
 
         return m_versions[index] == GetEntityVersion(entity);
+    }
+
+    inline EntityId EntityManager::ResolveEntityId(EntityIndex index) const {
+        if (index >= m_versions.size()) {
+            return kNullEntity;
+        }
+
+        return CreateEntityId(index, m_versions[index]);
     }
 }

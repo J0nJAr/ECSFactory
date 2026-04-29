@@ -38,12 +38,19 @@ namespace EF {
     using TypeHash = uint64_t;
     using TypeIndex = uint32_t;
 
+
+    template<typename... Types>
+    struct With {};
+
+    template<typename... Types>
+    struct Without {};
+
     inline constexpr uint32_t kEntityVersionShift = kEntityIndexBits;
 
-    inline constexpr EntityId kEntityIndexMask   = (EntityId(1) << kEntityIndexBits) - 1;
+    inline constexpr EntityId kEntityIndexMask = (EntityId(1) << kEntityIndexBits) - 1;
     inline constexpr EntityId kEntityVersionMask = (EntityId(1) << kEntityVersionBits) - 1;
 
-    inline constexpr EntityId kNullEntity        = std::numeric_limits<EntityId>::max();
+    inline constexpr EntityId kNullEntity  = std::numeric_limits<EntityId>::max();
 
     [[nodiscard]] constexpr EntityIndex GetEntityIndex(EntityId entityId) noexcept {
         return static_cast<EntityIndex>(entityId & kEntityIndexMask);

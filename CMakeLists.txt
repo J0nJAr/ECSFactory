@@ -25,6 +25,9 @@ else()
     add_compile_options(-Wall -Wextra)
 endif()
 
+enable_testing()
+
 add_subdirectory(EngineCore)
 add_subdirectory(GameServer)
 add_subdirectory(GameClient)
+add_subdirectory(tests)
