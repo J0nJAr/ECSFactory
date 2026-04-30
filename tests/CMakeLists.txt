@@ -1,8 +1,9 @@
 add_executable(EngineCoreTests
-    main.cpp
     EntityManagerTests.cpp
-    SparseSetTests.cpp
+    main.cpp
+    MathTests.cpp
     RegistryViewTests.cpp
+    SparseSetTests.cpp
 )
 
 target_link_libraries(EngineCoreTests PRIVATE EngineCore)
@@ -11,6 +12,14 @@ target_compile_features(EngineCoreTests PRIVATE cxx_std_20)
 add_test(NAME EngineCoreTests.All COMMAND EngineCoreTests)
 add_test(NAME EntityManager.DestroyedEntityIsNotAlive COMMAND EngineCoreTests EntityManager.DestroyedEntityIsNotAlive)
 add_test(NAME EntityManager.ReusedIndexGetsNewVersion COMMAND EngineCoreTests EntityManager.ReusedIndexGetsNewVersion)
+add_test(NAME Math.Vector2ArithmeticUsesFixed64Semantics COMMAND EngineCoreTests Math.Vector2ArithmeticUsesFixed64Semantics)
+add_test(NAME Math.Vector3DotCrossAndDistanceProduceExpectedValues COMMAND EngineCoreTests Math.Vector3DotCrossAndDistanceProduceExpectedValues)
+add_test(NAME Math.VectorNormalizeHandlesZeroSafely COMMAND EngineCoreTests Math.VectorNormalizeHandlesZeroSafely)
+add_test(NAME Math.QuaternionIdentityAndConjugateBehaveCorrectly COMMAND EngineCoreTests Math.QuaternionIdentityAndConjugateBehaveCorrectly)
+add_test(NAME Math.QuaternionRotatesForwardAroundYAxis COMMAND EngineCoreTests Math.QuaternionRotatesForwardAroundYAxis)
+add_test(NAME Math.TrigMatchesCardinalAngles COMMAND EngineCoreTests Math.TrigMatchesCardinalAngles)
+add_test(NAME Math.SqrtMatchesPerfectSquares COMMAND EngineCoreTests Math.SqrtMatchesPerfectSquares)
+add_test(NAME Math.IntegrateAngularVelocityLocalProducesExpectedYaw COMMAND EngineCoreTests Math.IntegrateAngularVelocityLocalProducesExpectedYaw)
 add_test(NAME SparseSet.EmplaceAndGetReturnsStoredValue COMMAND EngineCoreTests SparseSet.EmplaceAndGetReturnsStoredValue)
 add_test(NAME SparseSet.RemoveMaintainsAccessToRemainingElements COMMAND EngineCoreTests SparseSet.RemoveMaintainsAccessToRemainingElements)
 add_test(NAME RegistryView.ViewWithRequiredComponentsFiltersEntities COMMAND EngineCoreTests RegistryView.ViewWithRequiredComponentsFiltersEntities)

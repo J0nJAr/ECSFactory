@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
+
 #include "Base/Assert.hpp"
+#include "Base/Defines.hpp"
 
 
 #if defined(_MSC_VER)
@@ -14,7 +16,7 @@ namespace EF::Internal {
         uint64_t low;
     };
 
-    inline UInt128Parts MultiplyUnsigned64(uint64_t a, uint64_t b) noexcept {
+    EF_FORCEINLINE UInt128Parts MultiplyUnsigned64(uint64_t a, uint64_t b) noexcept {
 #if defined(__SIZEOF_INT128__)
         unsigned __int128 result = static_cast<unsigned __int128>(a) * static_cast<unsigned __int128>(b);
         return {
@@ -45,7 +47,7 @@ namespace EF::Internal {
 #endif
     }
 
-    inline uint64_t TwosComplementAbs(int64_t value) noexcept {
+    EF_FORCEINLINE uint64_t TwosComplementAbs(int64_t value) noexcept {
         if (value >= 0) {
             return static_cast<uint64_t>(value);
         }
@@ -54,7 +56,7 @@ namespace EF::Internal {
         return ~static_cast<uint64_t>(value) + 1ull;
     }
 
-    inline int64_t ApplySignedMagnitude(uint64_t magnitude, bool negative) noexcept {
+    EF_FORCEINLINE int64_t ApplySignedMagnitude(uint64_t magnitude, bool negative) noexcept {
         if (!negative) {
             return static_cast<int64_t>(magnitude);
         }
@@ -62,10 +64,10 @@ namespace EF::Internal {
         return static_cast<int64_t>(~magnitude + 1ull);
     }
 
-    inline int64_t MulQ32(int64_t lhs, int64_t rhs) noexcept {
+    EF_FORCEINLINE int64_t MulQ32(int64_t lhs, int64_t rhs) noexcept {
 #if defined(__SIZEOF_INT128__)
         __int128 result = static_cast<__int128>(lhs) * static_cast<__int128>(rhs);
-        return static_cast<int64_t>(result >> EF::Fixed64::FractionalBits);
+        return static_cast<int64_t>(result >> EF::Fixed64FractionalBits);
 #else
         const bool negative = ((lhs < 0) ^ (rhs < 0));
 
@@ -80,7 +82,7 @@ namespace EF::Internal {
 #endif
     }
 
-    inline uint64_t DivideUnsigned128By64(uint64_t high, uint64_t low, uint64_t divisor) noexcept {
+    EF_FORCEINLINE uint64_t DivideUnsigned128By64(uint64_t high, uint64_t low, uint64_t divisor) noexcept {
         EF_ASSERT(divisor != 0, "Division by zero in DivideUnsigned128By64.");
 
 #if defined(__SIZEOF_INT128__)
@@ -119,11 +121,11 @@ namespace EF::Internal {
 #endif
     }
 
-    inline int64_t DivQ32(int64_t lhs, int64_t rhs) noexcept {
+    EF_FORCEINLINE int64_t DivQ32(int64_t lhs, int64_t rhs) noexcept {
         EF_ASSERT(rhs != 0, "Division by zero in Fixed64.");
 
 #if defined(__SIZEOF_INT128__)
-        __int128 numerator = static_cast<__int128>(lhs) << EF::Fixed64::FractionalBits;
+        __int128 numerator = static_cast<__int128>(lhs) << EF::Fixed64FractionalBits;
         return static_cast<int64_t>(numerator / rhs);
 #else
         const bool negative = ((lhs < 0) ^ (rhs < 0));

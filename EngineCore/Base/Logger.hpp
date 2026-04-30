@@ -1,12 +1,12 @@
-// Logger.h 
+癤�// Logger.hpp
 
 #pragma once
+#include <chrono>
+#include <filesystem>
+#include <format>
+#include <fstream>
 #include <iostream>
 #include <string_view>
-#include <format>
-#include <chrono>
-#include <fstream>
-#include <filesystem>
 
 namespace EF {
     enum class LogLevel {
@@ -15,7 +15,7 @@ namespace EF {
 
     class Logger {
     public:
-        // 로거 초기화: 프로그램 시작 시 한 번 호출
+        // Initialize once during program startup.
         static void Init(const std::string& fileName = "engine.log") {
             Get().m_fileStream.open(fileName, std::ios::out | std::ios::app);
             if (Get().m_fileStream.is_open()) {
@@ -28,11 +28,11 @@ namespace EF {
             auto now = std::chrono::system_clock::now();
             auto time = std::chrono::current_zone()->to_local(now);
 
-            // 1. 메시지 포맷팅
+            // Format the message and timestamp first.
             std::string message = std::vformat(fmt, std::make_format_args(args...));
             std::string timeStr = std::format("{:%H:%M:%S}", time);
 
-            // 2. 레벨별 설정
+            // Resolve level-specific prefix and color.
             std::string_view prefix;
             std::string_view color;
             switch (level) {
@@ -42,14 +42,14 @@ namespace EF {
             case LogLevel::Critical: prefix = "[CRITICAL]"; color = "\033[41m"; break;
             }
 
-            // 콘솔 출력 (색상 포함)
+            // Console output with ANSI color.
             std::cout << color << timeStr << " " << prefix << " " << message << "\033[0m" << std::endl;
 
-            // 파일 출력 (색상 제외)
+            // File output without color codes.
             if (Get().m_fileStream.is_open()) {
                 Get().m_fileStream << timeStr << " " << prefix << " " << message << "\n";
 
-                //  크래시 시 로그 유실을 막으려면 해주는 게 좋음
+                // Flush errors eagerly to reduce log loss on crashes.
                 if (level >= LogLevel::Error) {
                     Get().m_fileStream.flush();
                 }
@@ -59,10 +59,12 @@ namespace EF {
     private:
         Logger() = default;
         ~Logger() {
-            if (m_fileStream.is_open()) m_fileStream.close();
+            if (m_fileStream.is_open()) {
+                m_fileStream.close();
+            }
         }
 
-        // 싱글톤 인스턴스 반환
+        // Return the singleton instance.
         static Logger& Get() {
             static Logger instance;
             return instance;

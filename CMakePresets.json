@@ -26,6 +26,11 @@
       }
     },
     {
+      "name": "default",
+      "displayName": "Default Debug",
+      "inherits": "x64-debug"
+    },
+    {
       "name": "x64-release",
       "displayName": "x64 Release",
       "inherits": "base",
@@ -36,12 +41,39 @@
   ],
   "buildPresets": [
     {
+      "name": "default",
+      "configurePreset": "default"
+    },
+    {
       "name": "x64-debug",
       "configurePreset": "x64-debug"
     },
     {
       "name": "x64-release",
       "configurePreset": "x64-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "x64-debug",
+      "configurePreset": "x64-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "x64-release",
+      "configurePreset": "x64-release",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }
