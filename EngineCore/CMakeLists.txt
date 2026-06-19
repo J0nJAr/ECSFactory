@@ -5,6 +5,9 @@ target_sources(EngineCore
         Base/GameEngine.cpp
         ECS/EntityCommandBuffer.cpp
         Math/Math.cpp
+        Network/MemoryConnection.cpp
+        Network/NetworkManager.cpp
+        Network/UDPConnection.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -33,9 +36,17 @@ target_sources(EngineCore
             Math/Quaternion.hpp
             Math/Vector.hpp
             Network/INetworkConnection.hpp
+            Network/MemoryConnection.hpp
+            Network/NetUtils.hpp
+            Network/NetworkManager.hpp
             Network/Packet.hpp
+            Network/UDPConnection.hpp
             ECS/ISystem.hpp
 )
 
 target_include_directories(EngineCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(EngineCore PUBLIC cxx_std_20)
+
+if(WIN32)
+    target_link_libraries(EngineCore PUBLIC ws2_32)
+endif()
