@@ -11,6 +11,8 @@ namespace EF {
         void DestroyEntity(EntityId entity);
         [[nodiscard]] bool IsAlive(EntityId entity) const;
         [[nodiscard]] EntityId ResolveEntityId(EntityIndex index) const;
+        [[nodiscard]] EntityIndex EntityCapacity() const noexcept;
+        void Clear();
 
     private:
         EntityIndex m_nextEntityIndex = 0;
@@ -60,5 +62,15 @@ namespace EF {
         }
 
         return CreateEntityId(index, m_versions[index]);
+    }
+
+    inline EntityIndex EntityManager::EntityCapacity() const noexcept {
+        return static_cast<EntityIndex>(m_versions.size());
+    }
+
+    inline void EntityManager::Clear() {
+        m_nextEntityIndex = 0;
+        m_freeIndices.clear();
+        m_versions.clear();
     }
 }

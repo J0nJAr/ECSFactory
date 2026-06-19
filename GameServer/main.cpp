@@ -1,42 +1,56 @@
-#include <iostream>
-#include "Base/Logger.hpp"
-#include "Base/Assert.hpp"
-#include "Math/Fixed64.hpp"
-#include "ECS/World.hpp"
-#include "Base/GameEngine.hpp"
 #include "Base/IGameApp.hpp"
+#include "Base/Logger.hpp"
+#include "Network/NetworkManager.hpp"
+#include "Network/UDPConnection.hpp"
+
+#include <memory>
 
 using namespace EF;
 
-class GameServerApplication : public IGameApp{
+class GameServerApplication : public GameAppBase {
 public:
-    void OnEngineConfigure(GameEngine& engine) override {
-        Logger::Log("Configuring Game Server Application...");
-        // Configure the game engine if needed
+    GameServerApplication()
+        : GameAppBase(GameEngineConfig{ EngineRole::Server, 20000 }) {
     }
 
-    void OnEngineInitialize(GameEngine& engine) override {
-        Logger::Log("Initializing Game Server Application...");
-        // Initialize game server resources, worlds, etc.
+protected:
+    void OnConfigure(GameEngine& engine) override {
+        LOG_INFO("Configuring dedicated server.");
+        engine.SetFixedTimeStep(20000);
     }
 
-    void OnEngineShutdown(GameEngine& engine) override {
-        Logger::Log("Shutting down Game Server Application...");
-        // Clean up resources, save state, etc.
+    void OnInitialize(GameEngine& engine) override {
+        LOG_INFO("Creating authoritative server simulation world.");
+        m_serverWorld = engine.CreateWorld(WorldRole::ServerSimulation, true);
+
+        auto udpConnection = std::make_shared<Network::UDPConnection>();
+        if (udpConnection->Bind(6780)) {
+            m_serverWorld->AddResource<NetworkManager>(udpConnection);
+            LOG_INFO("Dedicated server listening on UDP port 6780.");
+        } else {
+            LOG_INFO("Dedicated server failed to bind UDP port 6780.");
+        }
     }
+
+    int OnRun(GameEngine& engine) override {
+        LOG_INFO("Dedicated server running.");
+        engine.Run();
+        return 0;
+    }
+
+    void OnShutdown(GameEngine& engine) override {
+        static_cast<void>(engine);
+        LOG_INFO("Dedicated server shutting down.");
+        m_serverWorld = nullptr;
+    }
+
 private:
-    
-}
-
+    World* m_serverWorld = nullptr;
+};
 
 int main() {
-    GameServerApplication app;
-    
     Logger::Init("game_server.log");
-    Logger::Log("Starting Game Server..."); 
 
-
-
-
-    return 0;
+    GameServerApplication app;
+    return app.Run();
 }

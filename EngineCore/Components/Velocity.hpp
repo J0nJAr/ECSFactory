@@ -2,12 +2,10 @@
 #pragma once
 
 #include "Math/Vector.hpp"
-#include "Math/Quaternion.hpp"
 
 namespace EF {
-    struct Transform
-    {
-        Vector3 position;
-        Quaternion rotation;
+    struct Velocity {
+        Vector3 linear;
+        Vector3 angular;
     };
 }

@@ -1,27 +1,59 @@
 #pragma once
 
+#include "Base/GameEngine.hpp"
+
 namespace EF {
-    class GameEngine;
 
-
-    /**
-     * 모든 게임 애플리케이션은 IGameApp 인터페이스를 구현해야 합니다. 
-     * 게임 엔진은 스스로 IGameApp의 라이프사이클 메서드(OnEngineConfigure, OnEngineInitialize, OnEngineShutdown)를 호출하여 애플리케이션이 엔진과 상호작용할 수 있도록 합니다.
-     * 
-     * OnEngineConfigure: 게임 엔진이 초기화되기 전에 호출됩니다. 이 메서드에서 애플리케이션은 게임 엔진의 설정을 구성할 수 있습니다. 예를 들어, 고정 시간 단계의 길이를 설정하거나, 초기 월드를 생성하고 업데이트 대상으로 설정할 수 있습니다.
-     * OnEngineInitialize: 게임 엔진이 초기화된 후에 호출됩니다. 이 메서드에서 애플리케이션은 게임 로직을 초기화할 수 있습니다. 예를 들어, 시스템을 등록하거나, 초기 엔티티와 컴포넌트를 생성할 수 있습니다.
-     * OnEngineShutdown: 게임 엔진이 종료되기 전에 호출됩니다. 이 메서드에서 애플리케이션은 게임 로직을 정리할 수 있습니다. 
-     * 
-     * 일반적으로 서버에서는 OnEngineConfigure에서 고정 시간 단계의 길이를 설정하고, OnEngineInitialize에서 게임 월드를 생성하고 시스템을 등록하는 방식으로 구현됩니다.
-     * 클라이언트에서는 우선 서버에 연결한 후, 서버에서 초기 게임 상태를 받아와서 OnEngineInitialize에서 게임 월드를 생성하고 시스템을 등록하는 방식으로 구현됩니다.
-     */
-
+    // App-level owner for a GameEngine instance.
+    // Derived apps configure worlds and systems before the engine initializes them.
     class IGameApp {
     public:
+        explicit IGameApp(GameEngineConfig config = {})
+            : m_engine(config) {
+        }
+
         virtual ~IGameApp() = default;
 
-        virtual void OnEngineConfigure(GameEngine& engine) { static_cast<void>(engine); }
-        virtual void OnEngineInitialize(GameEngine& engine) { static_cast<void>(engine); }
-        virtual void OnEngineShutdown(GameEngine& engine) { static_cast<void>(engine); }
+        /**
+         * Runs the game application. This will call the virtual methods in the following order:
+         * 1. OnConfigure - for configuring the engine before initialization.
+         * 2. OnInitialize - for creating worlds and systems before the main loop starts.
+         * 3. call GameEngine::Initialize.
+         * 4. OnRun - the main entry point for running the app. By default
+         *    calls GameEngine::Run, but can be overridden for custom main loops or additional logic.
+         * 5. OnShutdown - for cleanup after the main loop exits, before engine shutdown.
+         * 6. call GameEngine::Shutdown.
+         */
+        int Run() {
+            OnConfigure(m_engine);
+            OnInitialize(m_engine);
+            m_engine.Initialize();
+            const int exitCode = OnRun(m_engine);
+            OnShutdown(m_engine);
+            m_engine.Shutdown();
+            return exitCode;
+        }
+
+    protected:
+        [[nodiscard]] GameEngine& GetEngine() noexcept {
+            return m_engine;
+        }
+
+        [[nodiscard]] const GameEngine& GetEngine() const noexcept {
+            return m_engine;
+        }
+
+        virtual void OnConfigure(GameEngine& engine) { static_cast<void>(engine); }
+        virtual void OnInitialize(GameEngine& engine) { static_cast<void>(engine); }
+        virtual int OnRun(GameEngine& engine) {
+            engine.Run();
+            return 0;
+        }
+        virtual void OnShutdown(GameEngine& engine) { static_cast<void>(engine); }
+
+    private:
+        GameEngine m_engine;
     };
+
+    using GameAppBase = IGameApp;
 }

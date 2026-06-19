@@ -1,10 +1,12 @@
 #pragma once
 
 #include <cstddef>
+#include <span>
 #include <utility>
 
 #include "Core.hpp"
 #include "SparseSet.hpp"
+#include "TypeInfo.hpp"
 
 namespace EF {
     class IPool {
@@ -14,6 +16,8 @@ namespace EF {
         [[nodiscard]] virtual std::size_t Size() const = 0;
         virtual void Clear() = 0;
         [[nodiscard]] virtual std::span<const EntityIndex> GetDenseEntities() const = 0;
+        [[nodiscard]] virtual std::span<const std::byte> GetRawBytes() const = 0;
+        [[nodiscard]] virtual const TypeInfo& GetType() const = 0;
     };
 
 
@@ -62,6 +66,22 @@ namespace EF {
 
         [[nodiscard]] std::span<const EntityIndex> GetDenseEntities() const override {
             return m_components.Keys();
+        }
+
+        [[nodiscard]] std::span<T> Values() noexcept {
+            return m_components.Values();
+        }
+
+        [[nodiscard]] std::span<const T> Values() const noexcept {
+            return m_components.Values();
+        }
+
+        [[nodiscard]] std::span<const std::byte> GetRawBytes() const override {
+            return std::as_bytes(m_components.Values());
+        }
+
+        [[nodiscard]] const TypeInfo& GetType() const override {
+            return GetTypeInfo<T>();
         }
     };
 }

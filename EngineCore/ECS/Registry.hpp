@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -64,6 +66,21 @@ namespace EF {
             return m_entityManager.CreateEntity();
         }
 
+        void EnsureEntityExists(EntityIndex index) {
+            while (m_entityManager.EntityCapacity() <= index) {
+                m_entityManager.CreateEntity();
+            }
+        }
+
+        void Clear() {
+            for (auto& pool : m_pools) {
+                if (pool) {
+                    pool->Clear();
+                }
+            }
+            m_entityManager.Clear();
+        }
+
         [[nodiscard]] EntityId ResolveEntityId(EntityIndex index) const {
             return m_entityManager.ResolveEntityId(index);
         }
@@ -92,6 +109,13 @@ namespace EF {
             return GetOrCreatePool<T>()->Add(GetEntityIndex(entity), std::forward<Args>(args)...);
         }
 
+        template<typename T>
+        T& AddComponentRaw(EntityIndex entityIndex, const void* componentData) {
+            EnsureEntityExists(entityIndex);
+            EF_ASSERT(componentData != nullptr, "Component data must not be null.");
+            return GetOrCreatePool<T>()->Add(entityIndex, *static_cast<const T*>(componentData));
+        }
+
         
         bool IsAlive(EntityId entity) const {
             return m_entityManager.IsAlive(entity);
@@ -112,6 +136,10 @@ namespace EF {
                 std::make_tuple(GetPool<std::remove_const_t<ComponentTypes>>()...),
                 std::make_tuple(GetPool<std::remove_const_t<ExcludedComponentTypes>>()...)
             );
+        }
+
+        [[nodiscard]] std::span<const std::unique_ptr<IPool>> GetPools() const noexcept {
+            return m_pools;
         }
     };
 }

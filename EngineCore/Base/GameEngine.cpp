@@ -1,4 +1,6 @@
 #include "GameEngine.hpp"
+#include "IGameApp.hpp"
+#include "InputManager.hpp"
 
 #include <algorithm>
 
@@ -8,13 +10,17 @@ namespace EF {
         constexpr double kMicrosecondsToSeconds = 1.0 / 1000000.0;
     }
 
-    GameEngine::GameEngine() = default;
+    GameEngine::GameEngine(GameEngineConfig config)
+        : m_config(config),
+          m_fixedTimeStepUs(config.fixedTimeStepUs) {
+    }
 
     GameEngine::~GameEngine() {
         DestroyAllWorlds();
     }
 
     void GameEngine::Initialize() {
+        Input::Initialize();
         for (World* world : m_worlds) {
             if (world) {
                 world->Initialize();
@@ -30,7 +36,8 @@ namespace EF {
             const uint64_t currentTimeUs = GetCurrentTimeUs();
             const uint64_t deltaTimeUs = currentTimeUs - m_lastFrameTimeUs;
             m_lastFrameTimeUs = currentTimeUs;
-
+            
+            Input::Update();
             ManualStepFrame(deltaTimeUs, FrameStepMode::SimulateRealTime);
         }
     }
@@ -54,9 +61,12 @@ namespace EF {
         m_lastFrameTimeUs = 0;
     }
 
-    World* GameEngine::CreateWorld(bool isUpdating) {
-        World* newWorld = new World();
+    World* GameEngine::CreateWorld(WorldRole role, bool isUpdating) {
+        std::unique_ptr<World> ownedWorld = std::make_unique<World>();
+        World* newWorld = ownedWorld.get();
+        m_ownedWorlds.push_back(std::move(ownedWorld));
         m_worlds.push_back(newWorld);
+        m_worldRoles.push_back(role);
         if (isUpdating) {
             m_updatingWorlds.push_back(newWorld);
         }
@@ -78,9 +88,38 @@ namespace EF {
             return false;
         }
 
-        delete *worldIt;
+        const auto worldIndex = static_cast<size_t>(std::distance(m_worlds.begin(), worldIt));
         m_worlds.erase(worldIt);
+        if (worldIndex < m_worldRoles.size()) {
+            m_worldRoles.erase(m_worldRoles.begin() + static_cast<std::ptrdiff_t>(worldIndex));
+        }
+
+        auto ownedIt = std::find_if(
+            m_ownedWorlds.begin(),
+            m_ownedWorlds.end(),
+            [world](const std::unique_ptr<World>& ownedWorld) {
+                return ownedWorld.get() == world;
+            }
+        );
+        if (ownedIt != m_ownedWorlds.end()) {
+            m_ownedWorlds.erase(ownedIt);
+        }
+
         return true;
+    }
+
+    WorldRole GameEngine::GetWorldRole(const World* world) const noexcept {
+        auto worldIt = std::find(m_worlds.begin(), m_worlds.end(), world);
+        if (worldIt == m_worlds.end()) {
+            return WorldRole::ClientPresentation;
+        }
+
+        const auto worldIndex = static_cast<size_t>(std::distance(m_worlds.begin(), worldIt));
+        if (worldIndex >= m_worldRoles.size()) {
+            return WorldRole::ClientPresentation;
+        }
+
+        return m_worldRoles[worldIndex];
     }
 
     bool GameEngine::SetWorldUpdating(World* world, bool isUpdating) {
@@ -176,12 +215,10 @@ namespace EF {
     }
 
     void GameEngine::DestroyAllWorlds() noexcept {
-        for (World* world : m_worlds) {
-            delete world;
-        }
-
+        m_ownedWorlds.clear();
         m_worlds.clear();
         m_updatingWorlds.clear();
+        m_worldRoles.clear();
     }
 
 }
