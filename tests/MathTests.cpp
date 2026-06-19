@@ -2,7 +2,10 @@
 #include "TestHarness.hpp"
 
 namespace {
-    constexpr EF::Fixed64 kTolerance = EF::Fixed64::FromRaw(8);
+    // 사인/제곱근 등 근사 함수의 정밀도는 Q16 테이블 기준이므로,
+    // 허용 오차도 Q16 절대값을 현재 Fixed64 스케일로 환산해서 유지한다.
+    constexpr int64_t kQ16ToScale = EF::Fixed64::Scale / 65536;
+    constexpr EF::Fixed64 kTolerance = EF::Fixed64::FromRaw(8 * kQ16ToScale);
 }
 
 TEST_CASE(Math, Vector2ArithmeticUsesFixed64Semantics) {
@@ -64,7 +67,7 @@ TEST_CASE(Math, TrigMatchesCardinalAngles) {
     EXPECT_TRUE(EF::Math::Sin(EF::Fixed64::Zero()) == EF::Fixed64::Zero());
     EXPECT_TRUE(EF::Math::Approx::NearlyEqual(EF::Math::Sin(EF::Math::HalfPi()), EF::Fixed64::One(), kTolerance));
     EXPECT_TRUE(EF::Math::Approx::NearlyEqual(EF::Math::Cos(EF::Math::Pi()), -EF::Fixed64::One(), kTolerance));
-    EXPECT_TRUE(EF::Math::Approx::NearlyEqual(EF::Math::Sin(EF::Math::Pi()), EF::Fixed64::Zero(), EF::Fixed64::FromRaw(32)));
+    EXPECT_TRUE(EF::Math::Approx::NearlyEqual(EF::Math::Sin(EF::Math::Pi()), EF::Fixed64::Zero(), EF::Fixed64::FromRaw(32 * kQ16ToScale)));
 }
 
 TEST_CASE(Math, SqrtMatchesPerfectSquares) {
@@ -73,7 +76,7 @@ TEST_CASE(Math, SqrtMatchesPerfectSquares) {
     EXPECT_TRUE(EF::Math::Approx::NearlyEqual(
         EF::Math::Sqrt(EF::Fixed64::FromInt(2)),
         EF::Fixed64::FromDouble(1.41421356237),
-        EF::Fixed64::FromRaw(4)));
+        EF::Fixed64::FromRaw(4 * kQ16ToScale)));
 }
 
 TEST_CASE(Math, IntegrateAngularVelocityLocalProducesExpectedYaw) {
@@ -85,5 +88,5 @@ TEST_CASE(Math, IntegrateAngularVelocityLocalProducesExpectedYaw) {
     EXPECT_TRUE(EF::Math::Approx::NearlyEqual(
         EF::Math::Forward(result),
         EF::Vector3::UnitX(),
-        EF::Fixed64::FromRaw(48)));
+        EF::Fixed64::FromRaw(48 * kQ16ToScale)));
 }

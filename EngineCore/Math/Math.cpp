@@ -25,11 +25,31 @@ namespace {
         65536
     };
 
-    constexpr int64_t kPiRaw = 205887;
-    constexpr int64_t kHalfPiRaw = 102944;
-    constexpr int64_t kTwoPiRaw = 411775;
-    constexpr int64_t kDegToRadRaw = 1144;
-    constexpr int64_t kRadToDegRaw = 3754936;
+    // 상수를 현재 Fixed64 스케일에 맞춰 컴파일 타임에 환산한다.
+    // (Q16, Q32 등 EF_FIXED64_FRACTIONAL_BITS가 무엇이든 올바른 raw 값을 만든다.)
+    constexpr double kPiValue = 3.14159265358979323846;
+
+    [[nodiscard]] constexpr int64_t ToScaledRaw(double value) noexcept {
+        return static_cast<int64_t>(value * static_cast<double>(EF::Fixed64::Scale) + 0.5);
+    }
+
+    constexpr int64_t kPiRaw = ToScaledRaw(kPiValue);
+    constexpr int64_t kHalfPiRaw = ToScaledRaw(kPiValue / 2.0);
+    constexpr int64_t kTwoPiRaw = ToScaledRaw(kPiValue * 2.0);
+    constexpr int64_t kDegToRadRaw = ToScaledRaw(kPiValue / 180.0);
+    constexpr int64_t kRadToDegRaw = ToScaledRaw(180.0 / kPiValue);
+
+    // kQuarterSinRaw 테이블은 Q16(2^16 = 1.0) 스케일로 저장되어 있으므로,
+    // 현재 Fixed64 스케일로 변환해서 사용한다.
+    constexpr int kSinTableFractionalBits = 16;
+
+    [[nodiscard]] EF_FORCEINLINE constexpr EF::Fixed64 QuarterSineToFixed(int64_t tableRaw) noexcept {
+        if constexpr (EF::Fixed64::FractionalBits >= kSinTableFractionalBits) {
+            return EF::Fixed64::FromRaw(tableRaw << (EF::Fixed64::FractionalBits - kSinTableFractionalBits));
+        } else {
+            return EF::Fixed64::FromRaw(tableRaw >> (kSinTableFractionalBits - EF::Fixed64::FractionalBits));
+        }
+    }
 
     [[nodiscard]] constexpr int64_t NormalizeRadiansRaw(int64_t raw) noexcept {
         raw %= kTwoPiRaw;
@@ -44,13 +64,13 @@ namespace {
             static_cast<__int128>(quarterAngleRaw) * kSinTableSegments * EF::Fixed64::Scale / kHalfPiRaw;
         const int64_t index = static_cast<int64_t>(scaledIndexRaw >> EF::Fixed64::FractionalBits);
         if (index >= kSinTableSegments) {
-            return EF::Fixed64::FromRaw(kQuarterSinRaw[kSinTableSegments]);
+            return QuarterSineToFixed(kQuarterSinRaw[kSinTableSegments]);
         }
 
         const EF::Fixed64 fraction = EF::Fixed64::FromRaw(
             static_cast<int64_t>(scaledIndexRaw & (EF::Fixed64::Scale - 1)));
-        const EF::Fixed64 start = EF::Fixed64::FromRaw(kQuarterSinRaw[index]);
-        const EF::Fixed64 end = EF::Fixed64::FromRaw(kQuarterSinRaw[index + 1]);
+        const EF::Fixed64 start = QuarterSineToFixed(kQuarterSinRaw[index]);
+        const EF::Fixed64 end = QuarterSineToFixed(kQuarterSinRaw[index + 1]);
         return start + (end - start) * fraction;
     }
 }

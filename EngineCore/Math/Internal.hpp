@@ -76,8 +76,9 @@ namespace EF::Internal {
 
         const UInt128Parts mul = MultiplyUnsigned64(a, b);
 
-        // (high:low) >> 32
-        const uint64_t shifted = (mul.high << 32) | (mul.low >> 32);
+        // 128비트 곱 (high:low)를 고정소수점 스케일만큼 우측 시프트한다.
+        constexpr int kFractionalBits = EF::Fixed64FractionalBits;
+        const uint64_t shifted = (mul.high << (64 - kFractionalBits)) | (mul.low >> kFractionalBits);
         return ApplySignedMagnitude(shifted, negative);
 #endif
     }
@@ -133,9 +134,10 @@ namespace EF::Internal {
         const uint64_t a = TwosComplementAbs(lhs);
         const uint64_t b = TwosComplementAbs(rhs);
 
-        // (a << 32)를 128비트 [high:low]로 구성
-        const uint64_t high = a >> 32;
-        const uint64_t low = a << 32;
+        // (a << FractionalBits)를 128비트 [high:low]로 구성
+        constexpr int kFractionalBits = EF::Fixed64FractionalBits;
+        const uint64_t high = a >> (64 - kFractionalBits);
+        const uint64_t low = a << kFractionalBits;
 
         const uint64_t quotient = DivideUnsigned128By64(high, low, b);
         return ApplySignedMagnitude(quotient, negative);
