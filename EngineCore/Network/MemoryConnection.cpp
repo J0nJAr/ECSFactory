@@ -1,15 +1,27 @@
 #include "MemoryConnection.hpp"
 
+#include <atomic>
 #include <utility>
 
 namespace EF::Network {
+    namespace {
+        // pair마다 유일한 peer id 두 개를 발급한다. 값 자체에는 의미가 없고
+        // 같은 서버 NetworkManager가 여러 peer를 구분할 수 있게 하는 용도다.
+        uint32_t NextMemoryPeerId() {
+            static std::atomic<uint32_t> counter{ 1 };
+            return counter.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 
     MemoryConnection::Pair MemoryConnection::CreatePair() {
         std::shared_ptr<MemoryConnection> first(new MemoryConnection());
         std::shared_ptr<MemoryConnection> second(new MemoryConnection());
 
-        first->SetPeer(second);
-        second->SetPeer(first);
+        const Endpoint firstEndpoint = Endpoint::Memory(NextMemoryPeerId());
+        const Endpoint secondEndpoint = Endpoint::Memory(NextMemoryPeerId());
+
+        first->Bind(second, firstEndpoint, secondEndpoint);
+        second->Bind(first, secondEndpoint, firstEndpoint);
 
         return { first, second };
     }
@@ -18,7 +30,8 @@ namespace EF::Network {
         Close();
     }
 
-    bool MemoryConnection::Send(std::span<const uint8_t> message) {
+    bool MemoryConnection::SendTo(const Endpoint& target, std::span<const uint8_t> message) {
+        static_cast<void>(target); // point-to-point라 대상은 항상 peer 하나다.
         if (m_isClosed) {
             return false;
         }
@@ -31,20 +44,23 @@ namespace EF::Network {
             return false;
         }
 
-        // 메시지를 통째로 상대 큐에 넣는다. 경계는 vector 그 자체가 들고 있다.
-        peer->Enqueue(std::vector<uint8_t>(message.begin(), message.end()));
+        // 메시지를 통째로 상대 큐에 넣는다. 받는 쪽은 from=내 endpoint로 본다.
+        peer->Enqueue(Datagram{
+            .from = m_selfEndpoint,
+            .bytes = std::vector<uint8_t>(message.begin(), message.end())
+        });
         return true;
     }
 
-    std::optional<std::vector<uint8_t>> MemoryConnection::Receive() {
+    std::optional<Datagram> MemoryConnection::ReceiveFrom() {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_inboundMessages.empty()) {
             return std::nullopt; // 논블로킹: 없으면 즉시 nullopt
         }
 
-        std::vector<uint8_t> message = std::move(m_inboundMessages.front());
+        Datagram datagram = std::move(m_inboundMessages.front());
         m_inboundMessages.pop();
-        return message;
+        return datagram;
     }
 
     void MemoryConnection::Close() {
@@ -52,13 +68,15 @@ namespace EF::Network {
         m_isClosed = true;
     }
 
-    void MemoryConnection::SetPeer(const std::shared_ptr<MemoryConnection>& peer) {
+    void MemoryConnection::Bind(const std::shared_ptr<MemoryConnection>& peer, Endpoint self, Endpoint peerEndpoint) {
         m_peer = peer;
+        m_selfEndpoint = self;
+        m_peerEndpoint = peerEndpoint;
     }
 
-    void MemoryConnection::Enqueue(std::vector<uint8_t> message) {
+    void MemoryConnection::Enqueue(Datagram datagram) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_inboundMessages.push(std::move(message));
+        m_inboundMessages.push(std::move(datagram));
     }
 
 }

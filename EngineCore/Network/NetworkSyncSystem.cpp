@@ -20,6 +20,9 @@ namespace EF {
         } else {
             UpdateServer(world, network, tick);
         }
+
+        // 재전송/누적 ack를 흘려보낸다.
+        network.Update(tick);
     }
 
     void NetworkSyncSystem::FrameUpdate(World& world, float frameDeltaSeconds) {
@@ -40,20 +43,27 @@ namespace EF {
             m_sentHello = network.SendHello();
         }
 
-        while (auto packet = network.TryReceivePacket()) {
-            HandlePacketOnClient(world, network, *packet);
+        while (auto received = network.TryReceive()) {
+            HandlePacketOnClient(world, network, received->packet);
         }
     }
 
     void NetworkSyncSystem::UpdateServer(World& world, NetworkManager& network, uint64_t tick) {
-        while (auto packet = network.TryReceivePacket()) {
-            HandlePacketOnServer(world, network, *packet, tick);
+        while (auto received = network.TryReceive()) {
+            HandlePacketOnServer(world, network, received->from, received->packet, tick);
         }
 
-        network.SendTickHash(TickHash{
-            .tick = tick,
-            .worldHash = world.ComputeHash()
-        });
+        // 등록된 모든 클라이언트에게 현재 월드 hash를 보낸다.
+        const uint64_t worldHash = world.ComputeHash();
+        for (const auto& [clientId, state] : network.Clients()) {
+            static_cast<void>(clientId);
+            if (state.endpoint.IsValid()) {
+                network.SendTickHash(TickHash{
+                    .tick = tick,
+                    .worldHash = worldHash
+                }, state.endpoint);
+            }
+        }
     }
 
     void NetworkSyncSystem::SendQueuedLocalInputs(NetworkManager& network, uint64_t tick) {
@@ -85,9 +95,9 @@ namespace EF {
     }
 
     /// @brief 클라이언트 모드에서 수신한 패킷을 처리한다.
-    /// @param world 
-    /// @param network 
-    /// @param packet 
+    /// @param world
+    /// @param network
+    /// @param packet
     void NetworkSyncSystem::HandlePacketOnClient(World& world, NetworkManager& network, const Network::NetworkPacket& packet) {
         switch (packet.type) {
         case Network::PacketType::Welcome: {
@@ -140,20 +150,25 @@ namespace EF {
     }
 
     /// @brief 서버 모드에서 수신한 패킷을 처리한다.
-    /// @param world 
-    /// @param network 
-    /// @param packet 
-    /// @param tick 
-    void NetworkSyncSystem::HandlePacketOnServer(World& world, NetworkManager& network, const Network::NetworkPacket& packet, uint64_t tick) {
+    /// @param world
+    /// @param network
+    /// @param from 보낸 사람 endpoint. 응답 라우팅과 clientId 인가에 쓴다.
+    /// @param packet
+    /// @param tick
+    void NetworkSyncSystem::HandlePacketOnServer(World& world, NetworkManager& network, const Network::Endpoint& from, const Network::NetworkPacket& packet, uint64_t tick) {
         switch (packet.type) {
         case Network::PacketType::Hello: {
             if (NetworkManager::DecodeHello(packet.payload)) {
-                const uint32_t clientId = network.AllocateClientId();
-                const EntityId controlledEntity = world.CreateEntity();
-                NetworkClientState& client = network.RegisterClient(clientId, controlledEntity);
-                client.hasTypeTable = true;
-                network.SendWelcome(clientId);
-                network.SendTypeTable(world.BuildTypeTable());
+                // 같은 endpoint의 Hello 재도착이면 기존 클라이언트를 재사용한다.
+                uint32_t clientId = network.ClientIdForEndpoint(from);
+                if (clientId == 0) {
+                    clientId = network.AllocateClientId();
+                    const EntityId controlledEntity = world.CreateEntity();
+                    NetworkClientState& client = network.RegisterClient(clientId, controlledEntity, from);
+                    client.hasTypeTable = true;
+                }
+                network.SendWelcome(clientId, from);
+                network.SendTypeTable(world.BuildTypeTable(), from);
             }
             break;
         }
@@ -162,7 +177,7 @@ namespace EF {
             uint64_t lastKnownTick = 0;
             if (NetworkManager::DecodeWorldSnapshotRequest(packet.payload, lastKnownTick)) {
                 static_cast<void>(lastKnownTick);
-                network.SendWorldSnapshot(world.CreateSnapshot(tick));
+                network.SendWorldSnapshot(world.CreateSnapshot(tick), from);
             }
             break;
         }
@@ -170,7 +185,12 @@ namespace EF {
         case Network::PacketType::InputCommand: {
             InputCommand command;
             if (NetworkManager::DecodeInputCommand(packet.payload, command)) {
-                network.EnqueueInput(command);
+                // 페이로드의 clientId를 믿지 않고 endpoint로 인가한다(스푸핑 방지).
+                const uint32_t authoritativeId = network.ClientIdForEndpoint(from);
+                if (authoritativeId != 0) {
+                    command.clientId = authoritativeId;
+                    network.EnqueueInput(command);
+                }
             }
             break;
         }
@@ -183,7 +203,7 @@ namespace EF {
                 static_cast<void>(resyncTick);
                 static_cast<void>(localHash);
                 static_cast<void>(remoteHash);
-                network.SendWorldSnapshot(world.CreateSnapshot(tick));
+                network.SendWorldSnapshot(world.CreateSnapshot(tick), from);
             }
             break;
         }

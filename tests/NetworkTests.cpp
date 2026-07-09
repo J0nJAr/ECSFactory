@@ -7,9 +7,12 @@
 #include "Components/Transform.hpp"
 #include "Components/Velocity.hpp"
 #include "ECS/World.hpp"
+#include "Network/Endpoint.hpp"
 #include "Network/MemoryConnection.hpp"
 #include "Network/NetworkManager.hpp"
 #include "Network/NetworkSyncSystem.hpp"
+#include "Network/ReliabilityChannel.hpp"
+#include "Network/SimulatedNetwork.hpp"
 
 namespace {
     EF::World CreateAuthoritativeWorld() {
@@ -40,6 +43,36 @@ namespace {
         EF::WorldSnapshot snapshot;
         return EF::NetworkManager::DecodeWorldSnapshot(snapshotPacket->payload, snapshot) &&
                clientWorld.ApplySnapshot(snapshot);
+    }
+
+    // 스냅샷 컴포넌트 등록 + 서버 authoritative 월드를 entityCount만큼 채운다.
+    void PopulateAuthoritativeWorld(EF::World& world, int entityCount) {
+        world.RegisterSnapshotComponent<EF::Transform>();
+        world.RegisterSnapshotComponent<EF::Velocity>();
+        for (int i = 0; i < entityCount; ++i) {
+            const EF::EntityId entity = world.CreateEntity();
+            world.AddComponent<EF::Transform>(entity, EF::Transform{
+                .position = EF::Vector3(i + 1, i + 2, i + 3),
+                .rotation = EF::Quaternion::Identity()
+            });
+            world.AddComponent<EF::Velocity>(entity, EF::Velocity{
+                .linear = EF::Vector3(i + 4, i + 5, i + 6),
+                .angular = EF::Vector3(i + 7, i + 8, i + 9)
+            });
+        }
+    }
+
+    // 클라이언트 월드에 스냅샷 컴포넌트 등록 + NetworkManager + Client 동기화 시스템.
+    EF::NetworkSyncSystem& AttachClientWorld(EF::World& world,
+                                             std::shared_ptr<EF::Network::INetworkConnection> connection) {
+        world.RegisterSnapshotComponent<EF::Transform>();
+        world.RegisterSnapshotComponent<EF::Velocity>();
+        world.AddResource<EF::NetworkManager>(std::move(connection));
+        return world.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+    }
+
+    EF::Fixed64 FixedTickDelta() {
+        return EF::Fixed64::FromRaw(EF::Fixed64::Scale / 50);
     }
 }
 
@@ -531,4 +564,206 @@ TEST_CASE(Network, ServerDropsDuplicateAndStaleInputBySequence) {
     EXPECT_EQ(serverNetwork.PendingInputs(5).size(), static_cast<std::size_t>(3));
     EXPECT_EQ(serverNetwork.PendingInputs(5).front().sequence, static_cast<uint32_t>(1));
     EXPECT_EQ(serverNetwork.PendingInputs(5).back().sequence, static_cast<uint32_t>(3));
+}
+
+TEST_CASE(Network, ReliabilityChannelDeliversReliableInOrderDespiteReorder) {
+    using EF::Network::ReliabilityChannel;
+    const auto record = [](uint8_t value) { return std::vector<uint8_t>{ value }; };
+
+    ReliabilityChannel sender;
+    ReliabilityChannel receiver;
+
+    // 하나씩 넣고 flush해서 각각 별도 데이터그램으로 만든다.
+    sender.Enqueue(ReliabilityChannel::Delivery::Reliable, record(10));
+    std::vector<std::vector<uint8_t>> first = sender.Flush(0);
+    sender.Enqueue(ReliabilityChannel::Delivery::Reliable, record(20));
+    std::vector<std::vector<uint8_t>> second = sender.Flush(0);
+    sender.Enqueue(ReliabilityChannel::Delivery::Reliable, record(30));
+    std::vector<std::vector<uint8_t>> third = sender.Flush(0);
+
+    EXPECT_EQ(first.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(second.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(third.size(), static_cast<std::size_t>(1));
+
+    // 역순으로 도착시켜도 원래 순서(10,20,30)로 전달되어야 한다.
+    std::vector<std::vector<uint8_t>> delivered;
+    receiver.OnReceive(third[0], delivered);
+    receiver.OnReceive(second[0], delivered);
+    receiver.OnReceive(first[0], delivered);
+
+    EXPECT_EQ(delivered.size(), static_cast<std::size_t>(3));
+    EXPECT_EQ(delivered[0][0], static_cast<uint8_t>(10));
+    EXPECT_EQ(delivered[1][0], static_cast<uint8_t>(20));
+    EXPECT_EQ(delivered[2][0], static_cast<uint8_t>(30));
+}
+
+TEST_CASE(Network, ReliabilityChannelKeepsOnlyNewestSequenced) {
+    using EF::Network::ReliabilityChannel;
+    const auto record = [](uint8_t value) { return std::vector<uint8_t>{ value }; };
+
+    ReliabilityChannel sender;
+    ReliabilityChannel receiver;
+
+    sender.Enqueue(ReliabilityChannel::Delivery::Sequenced, record(1));
+    std::vector<std::vector<uint8_t>> older = sender.Flush(0);
+    sender.Enqueue(ReliabilityChannel::Delivery::Sequenced, record(2));
+    std::vector<std::vector<uint8_t>> newer = sender.Flush(0);
+
+    // 최신(2)을 먼저 받고, 구식(1)이 뒤늦게 오면 버려야 한다.
+    std::vector<std::vector<uint8_t>> delivered;
+    receiver.OnReceive(newer[0], delivered);
+    receiver.OnReceive(older[0], delivered);
+
+    EXPECT_EQ(delivered.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(delivered[0][0], static_cast<uint8_t>(2));
+}
+
+TEST_CASE(Network, ReliabilityChannelReassemblesFragmentedRecord) {
+    using EF::Network::ReliabilityChannel;
+
+    // 조각화 임계(1024)를 넘는 큰 레코드.
+    std::vector<uint8_t> big(3000);
+    for (std::size_t i = 0; i < big.size(); ++i) {
+        big[i] = static_cast<uint8_t>(i * 7 + 3);
+    }
+
+    ReliabilityChannel sender;
+    ReliabilityChannel receiver;
+    sender.Enqueue(ReliabilityChannel::Delivery::Reliable, big);
+    std::vector<std::vector<uint8_t>> datagrams = sender.Flush(0);
+
+    // 여러 조각으로 나뉘어야 한다.
+    EXPECT_TRUE(datagrams.size() > static_cast<std::size_t>(1));
+
+    // 조각을 역순으로 넣어도 재조립되어야 한다.
+    std::vector<std::vector<uint8_t>> delivered;
+    for (auto it = datagrams.rbegin(); it != datagrams.rend(); ++it) {
+        receiver.OnReceive(*it, delivered);
+    }
+
+    EXPECT_EQ(delivered.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(delivered[0] == big);
+}
+
+TEST_CASE(Network, ServerRoutesToMultipleClientsThroughSingleNetworkManager) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(12345);
+    const Endpoint serverEp = Endpoint::Memory(1000);
+    const Endpoint clientOneEp = Endpoint::Memory(1);
+    const Endpoint clientTwoEp = Endpoint::Memory(2);
+
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientOneHost = net.CreateHost(clientOneEp, serverEp);
+    auto clientTwoHost = net.CreateHost(clientTwoEp, serverEp);
+
+    EF::World serverWorld;
+    PopulateAuthoritativeWorld(serverWorld, 1);
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientOneWorld;
+    EF::NetworkSyncSystem& clientOneSync = AttachClientWorld(clientOneWorld, clientOneHost);
+    EF::World clientTwoWorld;
+    EF::NetworkSyncSystem& clientTwoSync = AttachClientWorld(clientTwoWorld, clientTwoHost);
+    static_cast<void>(clientTwoSync);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    for (uint64_t tick = 1; tick <= 40; ++tick) {
+        clientOneWorld.FixedUpdate(dt, tick);
+        clientTwoWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    EF::NetworkManager& serverNet = serverWorld.GetResource<EF::NetworkManager>();
+    EF::NetworkManager& clientOneNet = clientOneWorld.GetResource<EF::NetworkManager>();
+    EF::NetworkManager& clientTwoNet = clientTwoWorld.GetResource<EF::NetworkManager>();
+
+    // 서버가 서로 다른 id를 발급하고, 두 클라이언트를 개별 추적한다.
+    EXPECT_TRUE(clientOneNet.LocalClientId() != static_cast<uint32_t>(0));
+    EXPECT_TRUE(clientTwoNet.LocalClientId() != static_cast<uint32_t>(0));
+    EXPECT_TRUE(clientOneNet.LocalClientId() != clientTwoNet.LocalClientId());
+    EXPECT_EQ(serverNet.Clients().size(), static_cast<std::size_t>(2));
+
+    // 두 클라이언트 모두 각자 endpoint로 스냅샷을 받아 서버와 동기화된다.
+    // (라우팅이 깨졌다면 한쪽은 수렴하지 못한다.)
+    EXPECT_EQ(clientOneWorld.ComputeHash(), serverWorld.ComputeHash());
+    EXPECT_EQ(clientTwoWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    // 입력이 보낸 클라이언트의 서버 큐로만 라우팅되는지 확인.
+    clientOneSync.QueueLocalInput(EF::InputCommand{ .buttonMask = 0b111 });
+    for (uint64_t tick = 41; tick <= 46; ++tick) {
+        clientOneWorld.FixedUpdate(dt, tick);
+        clientTwoWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    const uint32_t idOne = clientOneNet.LocalClientId();
+    const uint32_t idTwo = clientTwoNet.LocalClientId();
+    EXPECT_TRUE(serverNet.PendingInputs(idOne).size() >= static_cast<std::size_t>(1));
+    EXPECT_EQ(serverNet.PendingInputs(idTwo).size(), static_cast<std::size_t>(0));
+    EXPECT_EQ(serverNet.PendingInputs(idOne).front().buttonMask, static_cast<uint64_t>(0b111));
+    EXPECT_EQ(serverNet.PendingInputs(idOne).front().clientId, idOne);
+}
+
+TEST_CASE(Network, SyncSystemConvergesOverLossyReorderingLink) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(99);
+    net.SetLoss(0.2f);
+    net.SetDuplicate(0.1f);
+    net.SetReorder(0.3f, 4);
+
+    const Endpoint serverEp = Endpoint::Memory(500);
+    const Endpoint clientEp = Endpoint::Memory(1);
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientHost = net.CreateHost(clientEp, serverEp);
+
+    EF::World serverWorld;
+    PopulateAuthoritativeWorld(serverWorld, 3);
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = AttachClientWorld(clientWorld, clientHost);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    for (uint64_t tick = 1; tick <= 300; ++tick) {
+        clientWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    // 손실/중복/재정렬에도 신뢰 채널이 결국 상태를 맞춘다.
+    EXPECT_TRUE(clientSync.HasSnapshot());
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+}
+
+TEST_CASE(Network, LargeSnapshotReassemblesOverLossyLink) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(7);
+    net.SetLoss(0.15f);
+
+    const Endpoint serverEp = Endpoint::Memory(800);
+    const Endpoint clientEp = Endpoint::Memory(1);
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientHost = net.CreateHost(clientEp, serverEp);
+
+    EF::World serverWorld;
+    PopulateAuthoritativeWorld(serverWorld, 60); // 스냅샷이 조각화 임계를 크게 넘도록
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = AttachClientWorld(clientWorld, clientHost);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    for (uint64_t tick = 1; tick <= 400; ++tick) {
+        clientWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    // 큰 스냅샷이 여러 조각으로 나뉘고 손실을 넘어 재조립되어야 한다.
+    EXPECT_TRUE(clientSync.HasSnapshot());
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
 }

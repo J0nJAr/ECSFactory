@@ -21,6 +21,15 @@ namespace EF::Network {
             WriteUInt8(value);
         }
 
+        void WriteUInt16(uint16_t value) {
+            WriteUInt8(static_cast<uint8_t>((value >> 8) & 0xFF));
+            WriteUInt8(static_cast<uint8_t>(value & 0xFF));
+        }
+
+        void U16(uint16_t value) {
+            WriteUInt16(value);
+        }
+
         void WriteUInt32(uint32_t value) {
             WriteUInt8(static_cast<uint8_t>((value >> 24) & 0xFF));
             WriteUInt8(static_cast<uint8_t>((value >> 16) & 0xFF));
@@ -79,6 +88,14 @@ namespace EF::Network {
 
         void WriteBytes(std::span<const std::byte> bytes) {
             WriteBytes(bytes.data(), bytes.size());
+        }
+
+        void WriteRaw(const uint8_t* data, std::size_t size) {
+            m_buffer.insert(m_buffer.end(), data, data + size);
+        }
+
+        void WriteRaw(std::span<const uint8_t> data) {
+            WriteRaw(data.data(), data.size());
         }
 
         template<typename T>
@@ -166,6 +183,21 @@ namespace EF::Network {
             return ReadUInt32(value);
         }
 
+        bool ReadUInt16(uint16_t& value) {
+            if (m_offset + 2 > m_data.size()) {
+                return false;
+            }
+            value = static_cast<uint16_t>(
+                (static_cast<uint16_t>(m_data[m_offset]) << 8) |
+                static_cast<uint16_t>(m_data[m_offset + 1]));
+            m_offset += 2;
+            return true;
+        }
+
+        bool U16(uint16_t& value) {
+            return ReadUInt16(value);
+        }
+
         bool ReadUInt64(uint64_t& value) {
             if (m_offset + 8 > m_data.size()) {
                 return false;
@@ -238,6 +270,19 @@ namespace EF::Network {
 
         bool Bytes(std::vector<std::byte>& outBytes, std::size_t size) {
             return ReadBytes(outBytes, size);
+        }
+
+        bool ReadRaw(std::vector<uint8_t>& outBytes, std::size_t size) {
+            if (m_offset + size > m_data.size()) {
+                return false;
+            }
+            outBytes.assign(m_data.begin() + m_offset, m_data.begin() + m_offset + size);
+            m_offset += size;
+            return true;
+        }
+
+        [[nodiscard]] std::size_t Remaining() const noexcept {
+            return m_data.size() - m_offset;
         }
 
         [[nodiscard]] bool Finished() const noexcept {

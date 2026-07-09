@@ -56,7 +56,7 @@ namespace EF {
         void SendQueuedLocalInputs(NetworkManager& network, uint64_t tick);
 
         void HandlePacketOnClient(World& world, NetworkManager& network, const Network::NetworkPacket& packet);
-        void HandlePacketOnServer(World& world, NetworkManager& network, const Network::NetworkPacket& packet, uint64_t tick);
+        void HandlePacketOnServer(World& world, NetworkManager& network, const Network::Endpoint& from, const Network::NetworkPacket& packet, uint64_t tick);
 
     private:
         NetworkSyncMode m_mode;

@@ -389,6 +389,8 @@ std::size_t m_frameOffset;
 
 `m_currentFrame`과 `m_frameOffset`은 한 transport message 안에서 packet record를 하나씩 꺼내기 위한 버퍼다. 지금은 대부분 한 프레임에 패킷 하나만 넣지만, 포맷은 여러 record를 담을 수 있게 되어 있다.
 
+> 이 프레임 버퍼는 다음 글(07)에서 신뢰성 계층(`ReliabilityChannel`)이 들어오면서 `endpoint`별 채널로 대체된다.
+
 `NetworkSyncSystem`은 동기화 상태를 들고 있다.
 
 ```cpp
@@ -449,6 +451,8 @@ client address -> NetworkClientState / send target
 - prediction / rollback
 
 이번 글의 범위는 거기까지가 아니라, **동기화 루프의 뼈대를 닫는 것**이다.
+
+> 이 한계들 중 **다중 peer 라우팅 · 신뢰성(ack/재전송) · 순서 · 조각화/재조립**은 다음 글([07_reliable-udp-transport](07_reliable-udp-transport.md))에서 전송 계층을 다시 세워 닫는다. `delta snapshot`과 `prediction/rollback`은 전송이 아니라 게임플레이 계층 주제라 그 이후로 미룬다.
 
 ---
 

@@ -2,6 +2,7 @@
 
 #include <limits>
 #include <span>
+#include <utility>
 
 #include "Network/NetUtils.hpp"
 
@@ -31,6 +32,9 @@ namespace EF {
 
     NetworkManager::NetworkManager(std::shared_ptr<Network::INetworkConnection> connection)
         : m_connection(std::move(connection)) {
+        if (m_connection) {
+            m_defaultTarget = m_connection->DefaultPeer();
+        }
     }
 
     uint32_t NetworkManager::AllocateClientId() {
@@ -54,13 +58,23 @@ namespace EF {
         return it == m_clients.end() ? nullptr : &it->second;
     }
 
-    NetworkClientState& NetworkManager::RegisterClient(uint32_t clientId, EntityId controlledEntity) {
+    NetworkClientState& NetworkManager::RegisterClient(uint32_t clientId, EntityId controlledEntity,
+                                                       const Network::Endpoint& endpoint) {
         NetworkClientState& state = GetOrCreateClient(clientId);
         if (controlledEntity != kNullEntity) {
             state.controlledEntity = controlledEntity;
             state.hasControlledEntity = true;
         }
+        if (endpoint.IsValid()) {
+            state.endpoint = endpoint;
+            m_endpointToClient[endpoint] = clientId;
+        }
         return state;
+    }
+
+    uint32_t NetworkManager::ClientIdForEndpoint(const Network::Endpoint& endpoint) const {
+        auto it = m_endpointToClient.find(endpoint);
+        return it == m_endpointToClient.end() ? 0 : it->second;
     }
 
     bool NetworkManager::EnqueueInput(const InputCommand& command) {
@@ -106,90 +120,154 @@ namespace EF {
         return consumed;
     }
 
-    bool NetworkManager::SendHello() {
-        return SendPacket(Network::PacketType::Hello, EncodeHello());
+    Network::ReliabilityChannel::Delivery NetworkManager::DeliveryClassFor(Network::PacketType type) {
+        using Network::PacketType;
+        using Delivery = Network::ReliabilityChannel::Delivery;
+        switch (type) {
+        case PacketType::TickHash:
+            return Delivery::Sequenced;    // 최신만 의미 있음
+        case PacketType::InputCommand:
+            return Delivery::Unreliable;   // 손실은 다음 tick이 덮음, 앱 계층 dedup
+        default:
+            return Delivery::Reliable;     // 제어/스냅샷은 반드시 도착
+        }
     }
 
-    bool NetworkManager::SendWelcome(uint32_t assignedClientId) {
-        return SendPacket(Network::PacketType::Welcome, EncodeWelcome(assignedClientId));
+    Network::ReliabilityChannel& NetworkManager::ChannelFor(const Network::Endpoint& endpoint) {
+        return m_channels[endpoint];
     }
 
-    bool NetworkManager::SendTypeTable(const std::vector<ComponentTypeDescriptor>& types) {
-        return SendPacket(Network::PacketType::TypeTable, EncodeTypeTable(types));
+    bool NetworkManager::SendHello(const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::Hello, EncodeHello(), target);
     }
 
-    bool NetworkManager::SendWorldSnapshotRequest(uint64_t lastKnownTick) {
-        return SendPacket(Network::PacketType::WorldSnapshotRequest, EncodeWorldSnapshotRequest(lastKnownTick));
+    bool NetworkManager::SendWelcome(uint32_t assignedClientId, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::Welcome, EncodeWelcome(assignedClientId), target);
     }
 
-    bool NetworkManager::SendWorldSnapshot(const WorldSnapshot& snapshot) {
-        return SendPacket(Network::PacketType::WorldSnapshot, EncodeWorldSnapshot(snapshot));
+    bool NetworkManager::SendTypeTable(const std::vector<ComponentTypeDescriptor>& types, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::TypeTable, EncodeTypeTable(types), target);
     }
 
-    bool NetworkManager::SendInputCommand(const InputCommand& command) {
-        return SendPacket(Network::PacketType::InputCommand, EncodeInputCommand(command));
+    bool NetworkManager::SendWorldSnapshotRequest(uint64_t lastKnownTick, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::WorldSnapshotRequest, EncodeWorldSnapshotRequest(lastKnownTick), target);
     }
 
-    bool NetworkManager::SendTickHash(const TickHash& tickHash) {
-        return SendPacket(Network::PacketType::TickHash, EncodeTickHash(tickHash));
+    bool NetworkManager::SendWorldSnapshot(const WorldSnapshot& snapshot, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::WorldSnapshot, EncodeWorldSnapshot(snapshot), target);
     }
 
-    bool NetworkManager::SendResyncRequest(uint64_t tick, uint64_t localHash, uint64_t remoteHash) {
+    bool NetworkManager::SendInputCommand(const InputCommand& command, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::InputCommand, EncodeInputCommand(command), target);
+    }
+
+    bool NetworkManager::SendTickHash(const TickHash& tickHash, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::TickHash, EncodeTickHash(tickHash), target);
+    }
+
+    bool NetworkManager::SendResyncRequest(uint64_t tick, uint64_t localHash, uint64_t remoteHash,
+                                           const Network::Endpoint& target) {
         Writer writer;
         writer.U64(tick);
         writer.U64(localHash);
         writer.U64(remoteHash);
-        return SendPacket(Network::PacketType::ResyncRequest, writer.Take());
+        return SendPacket(Network::PacketType::ResyncRequest, writer.Take(), target);
     }
 
-    std::optional<Network::NetworkPacket> NetworkManager::TryReceivePacket() {
+    bool NetworkManager::SendPacket(Network::PacketType type, const std::vector<uint8_t>& payload,
+                                    const Network::Endpoint& target) {
+        if (!m_connection || payload.size() > std::numeric_limits<uint16_t>::max()) {
+            return false;
+        }
+
+        const Network::Endpoint destination = target.IsValid() ? target : m_defaultTarget;
+        if (!destination.IsValid()) {
+            return false;
+        }
+
+        // 앱 레코드 = [type][payload]. 신뢰성 계층은 이걸 불투명 바이트로 다룬다.
+        std::vector<uint8_t> record;
+        record.reserve(payload.size() + 1);
+        record.push_back(static_cast<uint8_t>(type));
+        record.insert(record.end(), payload.begin(), payload.end());
+
+        ChannelFor(destination).Enqueue(DeliveryClassFor(type), record);
+        return FlushEndpoint(destination);
+    }
+
+    bool NetworkManager::FlushEndpoint(const Network::Endpoint& endpoint) {
         if (!m_connection) {
+            return false;
+        }
+
+        std::vector<std::vector<uint8_t>> datagrams = ChannelFor(endpoint).Flush(m_currentTick);
+        bool allSent = true;
+        for (const std::vector<uint8_t>& datagram : datagrams) {
+            if (!m_connection->SendTo(endpoint, datagram)) {
+                allSent = false;
+            }
+        }
+        return allSent;
+    }
+
+    void NetworkManager::Update(uint64_t tick) {
+        m_currentTick = tick;
+        if (!m_connection) {
+            return;
+        }
+
+        // 모든 endpoint 채널의 재전송/누적 ack를 흘려보낸다.
+        for (auto& [endpoint, channel] : m_channels) {
+            std::vector<std::vector<uint8_t>> datagrams = channel.Flush(tick);
+            for (const std::vector<uint8_t>& datagram : datagrams) {
+                m_connection->SendTo(endpoint, datagram);
+            }
+        }
+    }
+
+    void NetworkManager::PumpConnection() {
+        if (!m_connection) {
+            return;
+        }
+
+        while (std::optional<Network::Datagram> datagram = m_connection->ReceiveFrom()) {
+            std::vector<std::vector<uint8_t>> delivered;
+            ChannelFor(datagram->from).OnReceive(datagram->bytes, delivered);
+
+            for (std::vector<uint8_t>& record : delivered) {
+                if (record.empty()) {
+                    continue;
+                }
+                Network::NetworkPacket packet;
+                packet.type = static_cast<Network::PacketType>(record[0]);
+                packet.payload.assign(record.begin() + 1, record.end());
+                m_delivered.push_back(ReceivedPacket{
+                    .from = datagram->from,
+                    .packet = std::move(packet)
+                });
+            }
+        }
+    }
+
+    std::optional<ReceivedPacket> NetworkManager::TryReceive() {
+        if (m_delivered.empty()) {
+            PumpConnection();
+        }
+        if (m_delivered.empty()) {
             return std::nullopt;
         }
 
-        while (true) {
-            // 현재 프레임을 다 소비했으면 다음 프레임(메시지)을 통로에서 가져온다.
-            if (m_frameOffset >= m_currentFrame.size()) {
-                std::optional<std::vector<uint8_t>> frame = m_connection->Receive();
-                if (!frame) {
-                    return std::nullopt;
-                }
+        ReceivedPacket received = std::move(m_delivered.front());
+        m_delivered.pop_front();
+        return received;
+    }
 
-                m_currentFrame = std::move(*frame);
-                m_frameOffset = 0;
-
-                // 프레임 맨 앞 1바이트 = 프로토콜 버전.
-                if (m_currentFrame.empty() || m_currentFrame[0] != Network::kProtocolVersion) {
-                    m_currentFrame.clear();
-                    m_frameOffset = 0;
-                    continue; // 우리 프레임이 아니거나 손상 → 버리고 다음 프레임
-                }
-                m_frameOffset = 1;
-            }
-
-            // 레코드 헤더 = [type(1)][size(4)]. 프레임 안에서 끝까지 반복해 꺼낸다.
-            Reader reader(std::span<const uint8_t>(m_currentFrame).subspan(m_frameOffset));
-            uint8_t rawType = 0;
-            uint32_t payloadSize = 0;
-            if (!reader.U8(rawType) || !reader.U32(payloadSize)) {
-                m_frameOffset = m_currentFrame.size(); // 손상 → 프레임 폐기
-                continue;
-            }
-
-            const std::size_t payloadStart = m_frameOffset + 5;
-            if (payloadStart + payloadSize > m_currentFrame.size()) {
-                m_frameOffset = m_currentFrame.size(); // 길이 모순 → 프레임 폐기
-                continue;
-            }
-
-            Network::NetworkPacket packet;
-            packet.type = static_cast<Network::PacketType>(rawType);
-            packet.payload.assign(
-                m_currentFrame.begin() + static_cast<std::ptrdiff_t>(payloadStart),
-                m_currentFrame.begin() + static_cast<std::ptrdiff_t>(payloadStart + payloadSize));
-            m_frameOffset = payloadStart + payloadSize;
-            return packet;
+    std::optional<Network::NetworkPacket> NetworkManager::TryReceivePacket() {
+        std::optional<ReceivedPacket> received = TryReceive();
+        if (!received) {
+            return std::nullopt;
         }
+        return std::move(received->packet);
     }
 
     std::vector<uint8_t> NetworkManager::EncodeHello() {
@@ -373,23 +451,5 @@ namespace EF {
                reader.U64(outLocalHash) &&
                reader.U64(outRemoteHash) &&
                reader.Finished();
-    }
-
-    bool NetworkManager::SendPacket(Network::PacketType type, const std::vector<uint8_t>& payload) {
-        if (!m_connection || payload.size() > std::numeric_limits<uint32_t>::max()) {
-            return false;
-        }
-
-        // 프레임 = [version][type][size][payload]
-        // 지금은 한 프레임에 패킷 하나(N=1)지만, 수신은 프레임 안의 레코드를
-        // 끝까지 읽으므로 나중에 틱 단위 배칭을 켜도 와이어 포맷은 그대로다.
-        Writer writer;
-        writer.U8(Network::kProtocolVersion);
-        writer.U8(static_cast<uint8_t>(type));
-        writer.U32(static_cast<uint32_t>(payload.size()));
-        std::vector<uint8_t> frame = writer.Take();
-        frame.insert(frame.end(), payload.begin(), payload.end());
-
-        return m_connection->Send(frame);
     }
 }
