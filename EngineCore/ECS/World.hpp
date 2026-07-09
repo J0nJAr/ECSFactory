@@ -113,6 +113,10 @@ namespace EF {
             return *static_cast<T*>(it->second.get());
         }
 
+        /// @brief 해당 타입의 스냅샷 컴포넌트를 등록한다. 
+        /// 스냅샷 컴포넌트는 네트워크 동기화 시에만 사용되며,
+        /// 반드시 비트 복사가능(trivially copyable)이어야 한다.
+        /// @tparam T 
         template<typename T>
         void RegisterSnapshotComponent() {
             static_assert(std::is_trivially_copyable_v<T>, "Snapshot components must be trivially copyable.");

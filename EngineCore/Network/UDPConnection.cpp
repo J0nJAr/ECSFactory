@@ -84,6 +84,9 @@ namespace EF::Network {
             return std::nullopt;
         }
 
+        m_peerAddress = fromAddress;
+        m_isConnected = true;
+
         buffer.resize(static_cast<std::size_t>(bytesReceived));
         return buffer;
     }

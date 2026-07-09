@@ -33,9 +33,33 @@ namespace EF {
         : m_connection(std::move(connection)) {
     }
 
+    uint32_t NetworkManager::AllocateClientId() {
+        while (m_nextClientId == 0 || m_clients.find(m_nextClientId) != m_clients.end()) {
+            ++m_nextClientId;
+        }
+
+        const uint32_t clientId = m_nextClientId;
+        ++m_nextClientId;
+        return clientId;
+    }
+
     NetworkClientState& NetworkManager::GetOrCreateClient(uint32_t clientId) {
         NetworkClientState& state = m_clients[clientId];
         state.clientId = clientId;
+        return state;
+    }
+
+    const NetworkClientState* NetworkManager::FindClient(uint32_t clientId) const {
+        auto it = m_clients.find(clientId);
+        return it == m_clients.end() ? nullptr : &it->second;
+    }
+
+    NetworkClientState& NetworkManager::RegisterClient(uint32_t clientId, EntityId controlledEntity) {
+        NetworkClientState& state = GetOrCreateClient(clientId);
+        if (controlledEntity != kNullEntity) {
+            state.controlledEntity = controlledEntity;
+            state.hasControlledEntity = true;
+        }
         return state;
     }
 
@@ -62,10 +86,32 @@ namespace EF {
         return it == m_clients.end() ? kEmpty : it->second.pendingInputs;
     }
 
-    bool NetworkManager::SendHello(uint32_t requestedClientId) {
-        Writer writer;
-        writer.U32(requestedClientId);
-        return SendPacket(Network::PacketType::Hello, writer.Take());
+    std::vector<InputCommand> NetworkManager::ConsumePendingInputs(uint32_t clientId, uint64_t upToTick) {
+        std::vector<InputCommand> consumed;
+        auto it = m_clients.find(clientId);
+        if (it == m_clients.end()) {
+            return consumed;
+        }
+
+        std::deque<InputCommand>& pending = it->second.pendingInputs;
+        for (auto inputIt = pending.begin(); inputIt != pending.end();) {
+            if (inputIt->tick <= upToTick) {
+                consumed.push_back(*inputIt);
+                inputIt = pending.erase(inputIt);
+            } else {
+                ++inputIt;
+            }
+        }
+
+        return consumed;
+    }
+
+    bool NetworkManager::SendHello() {
+        return SendPacket(Network::PacketType::Hello, EncodeHello());
+    }
+
+    bool NetworkManager::SendWelcome(uint32_t assignedClientId) {
+        return SendPacket(Network::PacketType::Welcome, EncodeWelcome(assignedClientId));
     }
 
     bool NetworkManager::SendTypeTable(const std::vector<ComponentTypeDescriptor>& types) {
@@ -73,9 +119,7 @@ namespace EF {
     }
 
     bool NetworkManager::SendWorldSnapshotRequest(uint64_t lastKnownTick) {
-        Writer writer;
-        writer.U64(lastKnownTick);
-        return SendPacket(Network::PacketType::WorldSnapshotRequest, writer.Take());
+        return SendPacket(Network::PacketType::WorldSnapshotRequest, EncodeWorldSnapshotRequest(lastKnownTick));
     }
 
     bool NetworkManager::SendWorldSnapshot(const WorldSnapshot& snapshot) {
@@ -146,6 +190,40 @@ namespace EF {
             m_frameOffset = payloadStart + payloadSize;
             return packet;
         }
+    }
+
+    std::vector<uint8_t> NetworkManager::EncodeHello() {
+        Writer writer;
+        writer.U32(0);
+        return writer.Take();
+    }
+
+    bool NetworkManager::DecodeHello(const std::vector<uint8_t>& payload) {
+        uint32_t reserved = 0;
+        Reader reader(payload);
+        return reader.U32(reserved) && reader.Finished();
+    }
+
+    std::vector<uint8_t> NetworkManager::EncodeWelcome(uint32_t assignedClientId) {
+        Writer writer;
+        writer.U32(assignedClientId);
+        return writer.Take();
+    }
+
+    bool NetworkManager::DecodeWelcome(const std::vector<uint8_t>& payload, uint32_t& outAssignedClientId) {
+        Reader reader(payload);
+        return reader.U32(outAssignedClientId) && reader.Finished();
+    }
+
+    std::vector<uint8_t> NetworkManager::EncodeWorldSnapshotRequest(uint64_t lastKnownTick) {
+        Writer writer;
+        writer.U64(lastKnownTick);
+        return writer.Take();
+    }
+
+    bool NetworkManager::DecodeWorldSnapshotRequest(const std::vector<uint8_t>& payload, uint64_t& outLastKnownTick) {
+        Reader reader(payload);
+        return reader.U64(outLastKnownTick) && reader.Finished();
     }
 
     std::vector<uint8_t> NetworkManager::EncodeTypeTable(const std::vector<ComponentTypeDescriptor>& types) {
@@ -282,6 +360,18 @@ namespace EF {
         Reader reader(payload);
         return reader.U64(outTickHash.tick) &&
                reader.U64(outTickHash.worldHash) &&
+               reader.Finished();
+    }
+
+    bool NetworkManager::DecodeResyncRequest(
+        const std::vector<uint8_t>& payload,
+        uint64_t& outTick,
+        uint64_t& outLocalHash,
+        uint64_t& outRemoteHash) {
+        Reader reader(payload);
+        return reader.U64(outTick) &&
+               reader.U64(outLocalHash) &&
+               reader.U64(outRemoteHash) &&
                reader.Finished();
     }
 

@@ -7,6 +7,7 @@ target_sources(EngineCore
         Math/Math.cpp
         Network/MemoryConnection.cpp
         Network/NetworkManager.cpp
+        Network/NetworkSyncSystem.cpp
         Network/UDPConnection.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -39,6 +40,7 @@ target_sources(EngineCore
             Network/MemoryConnection.hpp
             Network/NetUtils.hpp
             Network/NetworkManager.hpp
+            Network/NetworkSyncSystem.hpp
             Network/Packet.hpp
             Network/UDPConnection.hpp
             ECS/ISystem.hpp

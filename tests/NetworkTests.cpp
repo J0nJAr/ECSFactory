@@ -9,6 +9,7 @@
 #include "ECS/World.hpp"
 #include "Network/MemoryConnection.hpp"
 #include "Network/NetworkManager.hpp"
+#include "Network/NetworkSyncSystem.hpp"
 
 namespace {
     EF::World CreateAuthoritativeWorld() {
@@ -67,7 +68,7 @@ TEST_CASE(Network, HostModeSelfConnectionSynchronizesClientFromLocalServerWorld)
     clientWorld.RegisterSnapshotComponent<EF::Transform>();
     clientWorld.RegisterSnapshotComponent<EF::Velocity>();
 
-    EXPECT_TRUE(clientNetwork.SendHello(1));
+    EXPECT_TRUE(clientNetwork.SendHello());
     auto helloPacket = localServerNetwork.TryReceivePacket();
     EXPECT_TRUE(helloPacket.has_value());
     EXPECT_EQ(static_cast<int>(helloPacket->type), static_cast<int>(EF::Network::PacketType::Hello));
@@ -85,6 +86,137 @@ TEST_CASE(Network, HostModeSelfConnectionSynchronizesClientFromLocalServerWorld)
     EXPECT_TRUE(localServerNetwork.SendWorldSnapshot(localServerWorld.CreateSnapshot(100)));
     EXPECT_TRUE(ReceiveSnapshotInto(clientNetwork, clientWorld));
     EXPECT_EQ(clientWorld.ComputeHash(), localServerWorld.ComputeHash());
+}
+
+TEST_CASE(Network, SyncSystemCompletesInitialSnapshotHandshake) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World serverWorld = CreateAuthoritativeWorld();
+    serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    EF::NetworkSyncSystem& serverSync = serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    clientWorld.RegisterSnapshotComponent<EF::Velocity>();
+    clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    const EF::Fixed64 dt = EF::Fixed64::FromRaw(EF::Fixed64::Scale / 50);
+    clientWorld.FixedUpdate(dt, 1); // client sends Hello
+    serverWorld.FixedUpdate(dt, 1); // server replies TypeTable
+    clientWorld.FixedUpdate(dt, 2); // client requests snapshot
+    serverWorld.FixedUpdate(dt, 2); // server sends snapshot
+    clientWorld.FixedUpdate(dt, 3); // client applies snapshot
+
+    EXPECT_TRUE(clientSync.HasTypeTable());
+    EXPECT_TRUE(clientSync.HasWelcome());
+    EXPECT_TRUE(clientSync.HasSnapshot());
+    EXPECT_EQ(clientWorld.GetResource<EF::NetworkManager>().LocalClientId(), static_cast<uint32_t>(1));
+    EXPECT_EQ(clientSync.LastSnapshotTick(), static_cast<uint64_t>(2));
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    const std::deque<EF::InputCommand>& pending = serverWorld.GetResource<EF::NetworkManager>().PendingInputs(1);
+    EXPECT_EQ(pending.size(), static_cast<std::size_t>(0));
+
+    const EF::NetworkClientState* serverClient = serverWorld.GetResource<EF::NetworkManager>().FindClient(1);
+    EXPECT_TRUE(serverClient != nullptr);
+    EXPECT_TRUE(serverClient->hasControlledEntity);
+    EXPECT_TRUE(serverClient->controlledEntity != EF::kNullEntity);
+
+    static_cast<void>(serverSync);
+}
+
+TEST_CASE(Network, SyncSystemSendsQueuedInputToServer) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World serverWorld = CreateAuthoritativeWorld();
+    EF::NetworkManager& serverNetwork = serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    clientWorld.RegisterSnapshotComponent<EF::Velocity>();
+    clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    const EF::Fixed64 dt = EF::Fixed64::FromRaw(EF::Fixed64::Scale / 50);
+    clientWorld.FixedUpdate(dt, 1);
+    serverWorld.FixedUpdate(dt, 1);
+    clientWorld.FixedUpdate(dt, 2);
+    serverWorld.FixedUpdate(dt, 2);
+    clientWorld.FixedUpdate(dt, 3);
+
+    clientSync.QueueLocalInput(EF::InputCommand{
+        .buttonMask = 0b101,
+        .aimYaw = EF::Fixed64::FromInt(10),
+        .aimPitch = EF::Fixed64::FromInt(20)
+    });
+
+    clientWorld.FixedUpdate(dt, 4);
+    serverWorld.FixedUpdate(dt, 4);
+
+    EXPECT_EQ(clientWorld.GetResource<EF::NetworkManager>().LocalClientId(), static_cast<uint32_t>(1));
+
+    const std::deque<EF::InputCommand>& pending = serverNetwork.PendingInputs(1);
+    EXPECT_EQ(pending.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(pending.front().clientId, static_cast<uint32_t>(1));
+    EXPECT_EQ(pending.front().tick, static_cast<uint64_t>(4));
+    EXPECT_EQ(pending.front().sequence, static_cast<uint32_t>(1));
+    EXPECT_EQ(pending.front().buttonMask, static_cast<uint64_t>(0b101));
+}
+
+TEST_CASE(Network, ConsumePendingInputsReturnsAndRemovesInputsUpToTick) {
+    EF::NetworkManager serverNetwork(EF::Network::MemoryConnection::CreatePair().second);
+
+    EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 1, .sequence = 1 }));
+    EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 3, .sequence = 2 }));
+    EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 2, .sequence = 3 }));
+
+    std::vector<EF::InputCommand> consumed = serverNetwork.ConsumePendingInputs(5, 2);
+
+    EXPECT_EQ(consumed.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(consumed[0].tick, static_cast<uint64_t>(1));
+    EXPECT_EQ(consumed[1].tick, static_cast<uint64_t>(2));
+    EXPECT_EQ(serverNetwork.PendingInputs(5).size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(serverNetwork.PendingInputs(5).front().tick, static_cast<uint64_t>(3));
+}
+
+TEST_CASE(Network, SyncSystemRequestsAndAppliesResyncOnHashMismatch) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World serverWorld = CreateAuthoritativeWorld();
+    serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    clientWorld.RegisterSnapshotComponent<EF::Velocity>();
+    clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    const EF::Fixed64 dt = EF::Fixed64::FromRaw(EF::Fixed64::Scale / 50);
+    clientWorld.FixedUpdate(dt, 1);
+    serverWorld.FixedUpdate(dt, 1);
+    clientWorld.FixedUpdate(dt, 2);
+    serverWorld.FixedUpdate(dt, 2);
+    clientWorld.FixedUpdate(dt, 3);
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    auto view = clientWorld.CreateView<EF::Transform>();
+    view.ForEach([](EF::EntityIndex, EF::Transform& transform) {
+        transform.position = EF::Vector3(99, 99, 99);
+    });
+    EXPECT_FALSE(clientWorld.ComputeHash() == serverWorld.ComputeHash());
+
+    serverWorld.FixedUpdate(dt, 4); // server sends TickHash
+    clientWorld.FixedUpdate(dt, 5); // client detects mismatch and sends ResyncRequest
+    EXPECT_TRUE(clientSync.HasHashMismatch());
+
+    serverWorld.FixedUpdate(dt, 5); // server sends fresh snapshot
+    clientWorld.FixedUpdate(dt, 6); // client applies snapshot
+
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
 }
 
 TEST_CASE(Network, ServerClientConnectionTransfersInputAndSnapshot) {
@@ -125,7 +257,7 @@ TEST_CASE(Network, ServerClientConnectionTransfersInputAndSnapshot) {
     EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
 }
 
-TEST_CASE(Network, ServerHandlesMultipleClientConnectionsIndependently) {
+TEST_CASE(Network, ServerSynchronizesMultipleMemoryClientsWithDistinctAssignedIds) {
     auto [clientOneConnection, serverOneConnection] = EF::Network::MemoryConnection::CreatePair();
     auto [clientTwoConnection, serverTwoConnection] = EF::Network::MemoryConnection::CreatePair();
     EF::NetworkManager clientOneNetwork(clientOneConnection);
@@ -141,8 +273,72 @@ TEST_CASE(Network, ServerHandlesMultipleClientConnectionsIndependently) {
     clientTwoWorld.RegisterSnapshotComponent<EF::Transform>();
     clientTwoWorld.RegisterSnapshotComponent<EF::Velocity>();
 
-    EXPECT_TRUE(clientOneNetwork.SendInputCommand(EF::InputCommand{ .clientId = 1, .tick = 10, .sequence = 1, .buttonMask = 1 }));
-    EXPECT_TRUE(clientTwoNetwork.SendInputCommand(EF::InputCommand{ .clientId = 2, .tick = 10, .sequence = 1, .buttonMask = 2 }));
+    uint32_t nextClientId = 1;
+
+    EXPECT_TRUE(clientOneNetwork.SendHello());
+    EXPECT_TRUE(clientTwoNetwork.SendHello());
+
+    auto clientOneHello = serverClientOneNetwork.TryReceivePacket();
+    auto clientTwoHello = serverClientTwoNetwork.TryReceivePacket();
+    EXPECT_TRUE(clientOneHello.has_value());
+    EXPECT_TRUE(clientTwoHello.has_value());
+    EXPECT_EQ(static_cast<int>(clientOneHello->type), static_cast<int>(EF::Network::PacketType::Hello));
+    EXPECT_EQ(static_cast<int>(clientTwoHello->type), static_cast<int>(EF::Network::PacketType::Hello));
+    EXPECT_TRUE(EF::NetworkManager::DecodeHello(clientOneHello->payload));
+    EXPECT_TRUE(EF::NetworkManager::DecodeHello(clientTwoHello->payload));
+
+    const uint32_t clientOneId = nextClientId++;
+    const uint32_t clientTwoId = nextClientId++;
+    const EF::EntityId clientOneEntity = serverWorld.CreateEntity();
+    const EF::EntityId clientTwoEntity = serverWorld.CreateEntity();
+    serverClientOneNetwork.RegisterClient(clientOneId, clientOneEntity);
+    serverClientTwoNetwork.RegisterClient(clientTwoId, clientTwoEntity);
+    EXPECT_TRUE(serverClientOneNetwork.SendWelcome(clientOneId));
+    EXPECT_TRUE(serverClientTwoNetwork.SendWelcome(clientTwoId));
+    EXPECT_TRUE(serverClientOneNetwork.SendTypeTable(serverWorld.BuildTypeTable()));
+    EXPECT_TRUE(serverClientTwoNetwork.SendTypeTable(serverWorld.BuildTypeTable()));
+
+    auto clientOneWelcome = clientOneNetwork.TryReceivePacket();
+    auto clientTwoWelcome = clientTwoNetwork.TryReceivePacket();
+    EXPECT_TRUE(clientOneWelcome.has_value());
+    EXPECT_TRUE(clientTwoWelcome.has_value());
+    EXPECT_EQ(static_cast<int>(clientOneWelcome->type), static_cast<int>(EF::Network::PacketType::Welcome));
+    EXPECT_EQ(static_cast<int>(clientTwoWelcome->type), static_cast<int>(EF::Network::PacketType::Welcome));
+    uint32_t assignedClientOneId = 0;
+    uint32_t assignedClientTwoId = 0;
+    EXPECT_TRUE(EF::NetworkManager::DecodeWelcome(clientOneWelcome->payload, assignedClientOneId));
+    EXPECT_TRUE(EF::NetworkManager::DecodeWelcome(clientTwoWelcome->payload, assignedClientTwoId));
+    clientOneNetwork.SetLocalClientId(assignedClientOneId);
+    clientTwoNetwork.SetLocalClientId(assignedClientTwoId);
+    EXPECT_EQ(clientOneNetwork.LocalClientId(), static_cast<uint32_t>(1));
+    EXPECT_EQ(clientTwoNetwork.LocalClientId(), static_cast<uint32_t>(2));
+
+    auto clientOneTypeTable = clientOneNetwork.TryReceivePacket();
+    auto clientTwoTypeTable = clientTwoNetwork.TryReceivePacket();
+    EXPECT_TRUE(clientOneTypeTable.has_value());
+    EXPECT_TRUE(clientTwoTypeTable.has_value());
+    EXPECT_EQ(static_cast<int>(clientOneTypeTable->type), static_cast<int>(EF::Network::PacketType::TypeTable));
+    EXPECT_EQ(static_cast<int>(clientTwoTypeTable->type), static_cast<int>(EF::Network::PacketType::TypeTable));
+
+    EXPECT_TRUE(clientOneNetwork.SendWorldSnapshotRequest(0));
+    EXPECT_TRUE(clientTwoNetwork.SendWorldSnapshotRequest(0));
+    auto clientOneSnapshotRequest = serverClientOneNetwork.TryReceivePacket();
+    auto clientTwoSnapshotRequest = serverClientTwoNetwork.TryReceivePacket();
+    EXPECT_TRUE(clientOneSnapshotRequest.has_value());
+    EXPECT_TRUE(clientTwoSnapshotRequest.has_value());
+    EXPECT_EQ(static_cast<int>(clientOneSnapshotRequest->type), static_cast<int>(EF::Network::PacketType::WorldSnapshotRequest));
+    EXPECT_EQ(static_cast<int>(clientTwoSnapshotRequest->type), static_cast<int>(EF::Network::PacketType::WorldSnapshotRequest));
+
+    const EF::WorldSnapshot snapshot = serverWorld.CreateSnapshot(10);
+    EXPECT_TRUE(serverClientOneNetwork.SendWorldSnapshot(snapshot));
+    EXPECT_TRUE(serverClientTwoNetwork.SendWorldSnapshot(snapshot));
+    EXPECT_TRUE(ReceiveSnapshotInto(clientOneNetwork, clientOneWorld));
+    EXPECT_TRUE(ReceiveSnapshotInto(clientTwoNetwork, clientTwoWorld));
+    EXPECT_EQ(clientOneWorld.ComputeHash(), serverWorld.ComputeHash());
+    EXPECT_EQ(clientTwoWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    EXPECT_TRUE(clientOneNetwork.SendInputCommand(EF::InputCommand{ .clientId = clientOneNetwork.LocalClientId(), .tick = 10, .sequence = 1, .buttonMask = 1 }));
+    EXPECT_TRUE(clientTwoNetwork.SendInputCommand(EF::InputCommand{ .clientId = clientTwoNetwork.LocalClientId(), .tick = 10, .sequence = 1, .buttonMask = 2 }));
 
     auto clientOneInputPacket = serverClientOneNetwork.TryReceivePacket();
     auto clientTwoInputPacket = serverClientTwoNetwork.TryReceivePacket();
@@ -161,14 +357,13 @@ TEST_CASE(Network, ServerHandlesMultipleClientConnectionsIndependently) {
     EXPECT_EQ(serverClientOneNetwork.PendingInputs(1).front().buttonMask, uint64_t{ 1 });
     EXPECT_EQ(serverClientTwoNetwork.PendingInputs(2).front().buttonMask, uint64_t{ 2 });
 
-    const EF::WorldSnapshot snapshot = serverWorld.CreateSnapshot(10);
-    EXPECT_TRUE(serverClientOneNetwork.SendWorldSnapshot(snapshot));
-    EXPECT_TRUE(serverClientTwoNetwork.SendWorldSnapshot(snapshot));
-
-    EXPECT_TRUE(ReceiveSnapshotInto(clientOneNetwork, clientOneWorld));
-    EXPECT_TRUE(ReceiveSnapshotInto(clientTwoNetwork, clientTwoWorld));
-    EXPECT_EQ(clientOneWorld.ComputeHash(), serverWorld.ComputeHash());
-    EXPECT_EQ(clientTwoWorld.ComputeHash(), serverWorld.ComputeHash());
+    const EF::NetworkClientState* serverClientOne = serverClientOneNetwork.FindClient(1);
+    const EF::NetworkClientState* serverClientTwo = serverClientTwoNetwork.FindClient(2);
+    EXPECT_TRUE(serverClientOne != nullptr);
+    EXPECT_TRUE(serverClientTwo != nullptr);
+    EXPECT_TRUE(serverClientOne->hasControlledEntity);
+    EXPECT_TRUE(serverClientTwo->hasControlledEntity);
+    EXPECT_TRUE(serverClientOne->controlledEntity != serverClientTwo->controlledEntity);
 }
 
 TEST_CASE(Network, WorldSnapshotRoundTripCopiesTrivialComponents) {
@@ -238,7 +433,7 @@ TEST_CASE(Network, MemoryConnectionCarriesHelloTypeTableAndSnapshotPackets) {
     EF::NetworkManager clientNetwork(clientConnection);
     EF::NetworkManager serverNetwork(serverConnection);
 
-    EXPECT_TRUE(clientNetwork.SendHello(0));
+    EXPECT_TRUE(clientNetwork.SendHello());
     auto helloPacket = serverNetwork.TryReceivePacket();
     EXPECT_TRUE(helloPacket.has_value());
     EXPECT_EQ(static_cast<int>(helloPacket->type), static_cast<int>(EF::Network::PacketType::Hello));

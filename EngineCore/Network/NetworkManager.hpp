@@ -32,6 +32,8 @@ namespace EF {
 
     struct NetworkClientState {
         uint32_t clientId = 0;
+        EntityId controlledEntity = kNullEntity;
+        bool hasControlledEntity = false;
         uint64_t lastReceivedTick = 0;
         bool hasTypeTable = false;
         bool hasSnapshot = false;
@@ -63,12 +65,17 @@ namespace EF {
             m_localClientId = clientId;
         }
 
+        uint32_t AllocateClientId();
         NetworkClientState& GetOrCreateClient(uint32_t clientId);
+        [[nodiscard]] const NetworkClientState* FindClient(uint32_t clientId) const;
+        NetworkClientState& RegisterClient(uint32_t clientId, EntityId controlledEntity = kNullEntity);
         // 시퀀스 기준 중복/구식 입력은 폐기한다. 수락되면 true.
         bool EnqueueInput(const InputCommand& command);
         [[nodiscard]] const std::deque<InputCommand>& PendingInputs(uint32_t clientId) const;
+        std::vector<InputCommand> ConsumePendingInputs(uint32_t clientId, uint64_t upToTick);
 
-        bool SendHello(uint32_t requestedClientId = 0);
+        bool SendHello();
+        bool SendWelcome(uint32_t assignedClientId);
         bool SendTypeTable(const std::vector<ComponentTypeDescriptor>& types);
         bool SendWorldSnapshotRequest(uint64_t lastKnownTick);
         bool SendWorldSnapshot(const WorldSnapshot& snapshot);
@@ -77,6 +84,15 @@ namespace EF {
         bool SendResyncRequest(uint64_t tick, uint64_t localHash, uint64_t remoteHash);
 
         [[nodiscard]] std::optional<Network::NetworkPacket> TryReceivePacket();
+
+        static std::vector<uint8_t> EncodeHello();
+        static bool DecodeHello(const std::vector<uint8_t>& payload);
+
+        static std::vector<uint8_t> EncodeWelcome(uint32_t assignedClientId);
+        static bool DecodeWelcome(const std::vector<uint8_t>& payload, uint32_t& outAssignedClientId);
+
+        static std::vector<uint8_t> EncodeWorldSnapshotRequest(uint64_t lastKnownTick);
+        static bool DecodeWorldSnapshotRequest(const std::vector<uint8_t>& payload, uint64_t& outLastKnownTick);
 
         static std::vector<uint8_t> EncodeTypeTable(const std::vector<ComponentTypeDescriptor>& types);
         static bool DecodeTypeTable(const std::vector<uint8_t>& payload, std::vector<ComponentTypeDescriptor>& outTypes);
@@ -89,12 +105,18 @@ namespace EF {
 
         static std::vector<uint8_t> EncodeTickHash(const TickHash& tickHash);
         static bool DecodeTickHash(const std::vector<uint8_t>& payload, TickHash& outTickHash);
+        static bool DecodeResyncRequest(
+            const std::vector<uint8_t>& payload,
+            uint64_t& outTick,
+            uint64_t& outLocalHash,
+            uint64_t& outRemoteHash);
 
     private:
         bool SendPacket(Network::PacketType type, const std::vector<uint8_t>& payload);
 
         std::shared_ptr<Network::INetworkConnection> m_connection;
         uint32_t m_localClientId = 0;
+        uint32_t m_nextClientId = 1;
         std::unordered_map<uint32_t, NetworkClientState> m_clients;
 
         // 수신 프레임 버퍼. 한 프레임에 여러 패킷이 들어있을 수 있어서
