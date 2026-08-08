@@ -637,6 +637,159 @@ TEST_CASE(Network, WorldSnapshotRejectsMismatchedComponentShape) {
     EXPECT_FALSE(clientWorld.ApplySnapshot(snapshot));
 }
 
+namespace {
+    // 스냅샷 왕복 테스트용 서버 월드: 엔티티 5개를 만들고 index 1과 3을 파괴한다.
+    //
+    // 이 모양을 고른 이유: 파괴가 남긴 흔적 세 가지 — 0이 아닌 version, 비어 있지 않은
+    // free list, 그리고 free list의 **LIFO 순서**(3 → 1) — 를 한 번에 걸 수 있다.
+    EF::World CreateWorldWithHoles(std::vector<EF::EntityId>& outEntities) {
+        EF::World world;
+        world.RegisterSnapshotComponent<EF::Transform>();
+
+        for (int i = 0; i < 5; ++i) {
+            const EF::EntityId entity = world.CreateEntity();
+            world.AddComponent<EF::Transform>(entity, EF::Transform{
+                .position = EF::Vector3(i, i, i),
+                .rotation = EF::Quaternion::Identity()
+            });
+            outEntities.push_back(entity);
+        }
+
+        world.DestroyEntity(outEntities[1]);
+        world.DestroyEntity(outEntities[3]);
+        return world;
+    }
+
+    // 서버 월드를 실제 와이어 포맷으로 인코딩했다가 클라 월드에 적용한다.
+    // Encode/Decode를 거치는 이유: 새 EntitySnapshot 필드가 와이어에 실제로 실리는지까지
+    // 같이 검증하기 위해서다(구조체 복사만 하면 인코더 누락을 못 잡는다).
+    bool RoundTripSnapshotThroughWire(const EF::World& serverWorld, EF::World& clientWorld, uint64_t tick) {
+        const std::vector<uint8_t> payload =
+            EF::NetworkManager::EncodeWorldSnapshot(serverWorld.CreateSnapshot(tick));
+
+        EF::WorldSnapshot decoded;
+        return EF::NetworkManager::DecodeWorldSnapshot(payload, decoded) && clientWorld.ApplySnapshot(decoded);
+    }
+}
+
+TEST_CASE(Network, SnapshotRestoresEntityAllocationStateAcrossDestroys) {
+    std::vector<EF::EntityId> entities;
+    EF::World serverWorld = CreateWorldWithHoles(entities);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    EXPECT_TRUE(RoundTripSnapshotThroughWire(serverWorld, clientWorld, 7));
+
+    // free list는 LIFO라 3 → 1 순으로 회수되고, 그 뒤에야 새 index 5가 나온다.
+    // 회수된 index의 version은 파괴 때 1 올라가 있어야 한다.
+    const EF::EntityId serverFirst = serverWorld.CreateEntity();
+    const EF::EntityId clientFirst = clientWorld.CreateEntity();
+    EXPECT_EQ(EF::GetEntityIndex(serverFirst), static_cast<EF::EntityIndex>(3));
+    EXPECT_EQ(EF::GetEntityVersion(serverFirst), static_cast<EF::EntityVersion>(1));
+    EXPECT_EQ(clientFirst, serverFirst);
+
+    const EF::EntityId serverSecond = serverWorld.CreateEntity();
+    const EF::EntityId clientSecond = clientWorld.CreateEntity();
+    EXPECT_EQ(EF::GetEntityIndex(serverSecond), static_cast<EF::EntityIndex>(1));
+    EXPECT_EQ(EF::GetEntityVersion(serverSecond), static_cast<EF::EntityVersion>(1));
+    EXPECT_EQ(clientSecond, serverSecond);
+
+    // free list가 마르면 양쪽 모두 새 index로 넘어간다.
+    const EF::EntityId serverThird = serverWorld.CreateEntity();
+    const EF::EntityId clientThird = clientWorld.CreateEntity();
+    EXPECT_EQ(EF::GetEntityIndex(serverThird), static_cast<EF::EntityIndex>(5));
+    EXPECT_EQ(EF::GetEntityVersion(serverThird), static_cast<EF::EntityVersion>(0));
+    EXPECT_EQ(clientThird, serverThird);
+}
+
+TEST_CASE(Network, WorldHashStaysEqualWhenBothSidesSpawnAfterSnapshot) {
+    std::vector<EF::EntityId> entities;
+    EF::World serverWorld = CreateWorldWithHoles(entities);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    EXPECT_TRUE(RoundTripSnapshotThroughWire(serverWorld, clientWorld, 11));
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    // 확정 입력을 양쪽이 똑같이 적용한 상황을 흉내낸다 — 같은 횟수, 같은 컴포넌트.
+    // 스폰을 복제하지 않고도 해시가 유지되는 것이 결정론 lockstep의 전제다.
+    for (int i = 0; i < 4; ++i) {
+        const EF::Transform spawned{
+            .position = EF::Vector3(100 + i, 200 + i, 300 + i),
+            .rotation = EF::Quaternion::Identity()
+        };
+        serverWorld.AddComponent<EF::Transform>(serverWorld.CreateEntity(), spawned);
+        clientWorld.AddComponent<EF::Transform>(clientWorld.CreateEntity(), spawned);
+    }
+
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+}
+
+TEST_CASE(Network, SnapshotKeepsEntityWithoutSnapshotComponents) {
+    EF::World serverWorld;
+    serverWorld.RegisterSnapshotComponent<EF::Transform>();
+
+    const EF::EntityId withComponent = serverWorld.CreateEntity();
+    serverWorld.AddComponent<EF::Transform>(withComponent, EF::Transform{
+        .position = EF::Vector3(1, 2, 3),
+        .rotation = EF::Quaternion::Identity()
+    });
+
+    // 컴포넌트를 하나도 붙이지 않는다. 컴포넌트 데이터에는 흔적이 남지 않으므로
+    // 엔티티 상태를 따로 싣지 않으면 이 엔티티는 스냅샷을 넘어가며 사라진다.
+    // (서버가 Hello를 받고 만드는 controlledEntity가 정확히 이 모양이다.)
+    const EF::EntityId bare = serverWorld.CreateEntity();
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    EXPECT_TRUE(RoundTripSnapshotThroughWire(serverWorld, clientWorld, 3));
+
+    EXPECT_TRUE(clientWorld.IsAlive(withComponent));
+    EXPECT_TRUE(clientWorld.IsAlive(bare));
+
+    // 살아남았다면 다음 할당도 그 뒤에서 시작해야 한다.
+    EXPECT_EQ(clientWorld.CreateEntity(), serverWorld.CreateEntity());
+}
+
+TEST_CASE(Network, SnapshotRejectsInconsistentEntityState) {
+    std::vector<EF::EntityId> entities;
+    EF::World serverWorld = CreateWorldWithHoles(entities);
+    const EF::WorldSnapshot valid = serverWorld.CreateSnapshot(1);
+
+    auto applyMutated = [&valid](auto&& mutate) {
+        EF::WorldSnapshot snapshot = valid;
+        mutate(snapshot);
+
+        EF::World clientWorld;
+        clientWorld.RegisterSnapshotComponent<EF::Transform>();
+        return clientWorld.ApplySnapshot(snapshot);
+    };
+
+    // 온전한 스냅샷은 통과한다(아래 거부들이 다른 이유로 실패한 게 아님을 보장).
+    EXPECT_TRUE(applyMutated([](EF::WorldSnapshot&) {}));
+
+    // nextEntityIndex와 versions 길이가 어긋나면 거부.
+    EXPECT_FALSE(applyMutated([](EF::WorldSnapshot& snapshot) {
+        snapshot.entities.nextEntityIndex += 1;
+    }));
+
+    // 범위 밖 free index는 거부.
+    EXPECT_FALSE(applyMutated([](EF::WorldSnapshot& snapshot) {
+        snapshot.entities.freeIndices.push_back(snapshot.entities.nextEntityIndex);
+    }));
+
+    // 중복 free index는 거부 — 같은 index가 두 번 살아나면 엔티티가 겹친다.
+    EXPECT_FALSE(applyMutated([](EF::WorldSnapshot& snapshot) {
+        snapshot.entities.freeIndices.push_back(snapshot.entities.freeIndices.front());
+    }));
+
+    // 죽은 index에 컴포넌트가 붙어 있으면 거부. 그냥 받으면 EnsureEntityExists가
+    // 복원된 free list를 갉아먹어서 다음 할당이 서버와 갈라진다.
+    EXPECT_FALSE(applyMutated([](EF::WorldSnapshot& snapshot) {
+        snapshot.components[0].entities[0] = snapshot.entities.freeIndices.front();
+    }));
+}
+
 TEST_CASE(Network, WorldHashChangesWhenComponentDataChanges) {
     EF::World world;
     world.RegisterSnapshotComponent<EF::Transform>();

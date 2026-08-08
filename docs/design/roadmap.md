@@ -19,7 +19,7 @@
 | **렌더링** | 📄 설계만 (`rendering-dx11.md` P0~P8), 코드 0줄 |
 | **UI** | 📄 설계만 (`ui-layer.md` U1~U8), 코드 0줄 |
 | **실제 키보드/마우스 입력 배선** | ❌ 테스트가 `QueueLocalInput`을 직접 호출 중 |
-| **결정론 스폰/디스폰** | ❌ 미구현 — §6에 중요한 함정 있음 |
+| **결정론 스폰/디스폰** | 🟡 N1(스냅샷에 EntityManager 상태 포함) 완료, N2(확정 입력에서만 스폰) 남음 — §6 |
 | **공장 게임 자체** | ❌ 설계도 코드도 없음 |
 | 예측/롤백 | ❌ (의도적 후순위) |
 
@@ -94,7 +94,7 @@ flowchart TB
     end
 
     subgraph N["트랙 N — 결정론 스폰"]
-        N1["N1 EntityManager 상태 복원"] --> N2["N2 확정 입력에서만 스폰"]
+        N1["✅ N1 EntityManager 상태 복원"] --> N2["N2 확정 입력에서만 스폰"]
     end
 
     subgraph G["트랙 G — 공장 게임플레이"]
@@ -264,9 +264,15 @@ UI를 렌더링 중간에 끼우는 이유: **UI는 카메라가 필요 없어�
 
 이게 성립하려면 딱 하나가 필요하다: **양쪽 `EntityManager`의 상태가 같아야 한다.**
 
-### 나쁜 소식: 지금은 그 전제가 깨져 있다
+### 나쁜 소식이었던 것: 그 전제가 깨져 있었다 (N1에서 고침)
 
-코드를 따라가면 이렇다.
+> ✅ **아래 §"나쁜 소식" 문단은 N1 이전의 상태를 기록한 것이다.** 지금은 `WorldSnapshot`이
+> `EntitySnapshot`을 싣고 `ApplySnapshot`이 컴포넌트보다 먼저 그것을 복원한다.
+> 무엇을 왜 실었는지는 [EntitiyManager.hpp](../../EngineCore/ECS/EntitiyManager.hpp)의
+> `EntitySnapshot` 주석에 있다. 문제 자체를 남겨 두는 이유는, 이게 "왜 이 필드들이
+> 필요한가"에 대한 유일한 설명이기 때문이다.
+
+코드를 따라가면 이랬다.
 
 ```
 World::ApplySnapshot()      → Registry newRegistry;   ← 완전히 새 Registry (새 EntityManager)
@@ -293,14 +299,27 @@ World::ApplySnapshot()      → Registry newRegistry;   ← 완전히 새 Regist
 
 > 지금 이 문제가 안 보이는 이유는, 현재 테스트가 **초기 스냅샷에 담긴 엔티티만** 쓰고 시뮬 도중에 스폰을 하지 않기 때문이다. 건설을 넣는 순간 터진다.
 
-### N1. `EntityManager` 상태를 스냅샷에 포함
+### ✅ N1. `EntityManager` 상태를 스냅샷에 포함 — 완료
 
-**할 일:** `WorldSnapshot`에 엔티티 목록 자체(살아 있는 index + 각 index의 version, free list, next index)를 싣고, `ApplySnapshot`이 그것으로 `EntityManager`를 복원한다. 컴포넌트 데이터와 별개로 **"엔티티가 존재한다"는 사실 자체가 복제 대상**이 되어야 한다.
+**한 일:** `WorldSnapshot`에 `EntitySnapshot { nextEntityIndex, versions[], freeIndices[] }`를 싣고, `World::ApplySnapshot`이 **컴포넌트보다 먼저** `EntityManager::RestoreFrom()`으로 그것을 복원한다. 컴포넌트 데이터와 별개로 "엔티티가 존재한다"는 사실 자체가 복제 대상이 됐다.
 
-**완료 기준(테스트):**
-1. 서버에서 엔티티를 몇 개 만들고 일부를 파괴한 뒤 스냅샷 → 클라 적용 → **양쪽 `EntityManager`가 같은 index를 다음에 할당**한다.
-2. 스냅샷 적용 후 서버·클라가 각자 같은 횟수만큼 `CreateEntity()` → 나온 `EntityId`가 완전히 일치한다.
-3. 컴포넌트가 하나도 없는 엔티티도 스냅샷을 넘어 살아남는다.
+**왜 "살아 있는 (index, version) 목록"이 아니라 내부 3필드인가:**
+
+- `versions`는 **죽은 index의 것까지** 필요하다. free list에서 회수된 index의 version은 `versions[index]`를 그대로 읽어 쓰므로, 죽은 index의 version을 모르면 재사용 순간 `EntityId`가 갈라진다.
+- `freeIndices`는 **순서가 의미를 가진다**(LIFO pop). 살아 있는 엔티티 집합만으로는 이 순서를 복원할 수 없다 — 즉 "살아 있는 목록"만으로는 애초에 부족하다.
+- 반대 방향은 유도된다: 살아 있는 index = `[0, nextEntityIndex)` − `freeIndices`. 그래서 3필드 쪽이 더 작으면서 동시에 필요충분이다.
+
+**와이어:** `WorldSnapshot` 페이로드의 `tick` 바로 뒤에 `nextEntityIndex`(u32) → `versions`(길이 접두 + u32 배열) → `freeIndices`(길이 접두 + u32 배열)가 들어간다. 포맷이 바뀌었으므로 `kProtocolVersion`을 `1 → 2`로 올렸다. (⚠️ 다만 그 상수는 아직 어느 프레임에도 실리지 않아 **실제로 버전을 거르지는 못한다** — Packet.hpp 주석 참고.)
+
+**엄격성:** 와이어에서 온 엔티티 상태는 믿지 않는다. `nextEntityIndex != versions.size()`, 범위 밖 free index, 중복 free index, **죽은 index에 붙은 컴포넌트**는 전부 스냅샷 적용 거부(`ApplySnapshot`이 false)다. 마지막 항목이 중요한데, 그냥 받으면 `EnsureEntityExists`가 `CreateEntity()`를 돌려 복원된 free list를 갉아먹는다.
+
+**완료 기준(테스트) — `tests/NetworkTests.cpp`, 모두 수정 전에는 실패함을 확인했다:**
+1. ✅ `Network.SnapshotRestoresEntityAllocationStateAcrossDestroys` — 엔티티 5개 중 2개 파괴 후 스냅샷 → 클라 적용 → 다음 세 번의 `CreateEntity()`가 index·version까지 완전히 일치(3v1 → 1v1 → 5v0).
+2. ✅ `Network.WorldHashStaysEqualWhenBothSidesSpawnAfterSnapshot` — 스냅샷 적용 후 양쪽이 같은 횟수만큼 스폰·같은 컴포넌트 부착 → `ComputeHash()` 일치.
+3. ✅ `Network.SnapshotKeepsEntityWithoutSnapshotComponents` — 컴포넌트가 하나도 없는 엔티티도 왕복 후 `IsAlive`.
+4. ✅ `Network.SnapshotRejectsInconsistentEntityState` — 위 "엄격성" 네 가지 거부 조건.
+
+**N1이 하지 않은 것:** `World::ComputeHash()`는 여전히 `EntityManager` 상태를 섞지 않는다. 섞으면 디싱크를 더 빨리 잡을 수 있지만, 지금은 서버가 확정 입력 밖에서 스폰하는 경로(`NetworkSyncSystem`의 Hello 처리 → `world.CreateEntity()`)가 남아 있어 정상 세션조차 불일치로 판정된다. **그 경로를 옮기는 게 N2이고, 엔티티 상태를 해시에 넣는 건 N2 직후에 할 일이다.**
 
 ### N2. 스폰/디스폰은 확정 입력에서만
 

@@ -66,10 +66,30 @@ namespace EF {
             return m_entityManager.CreateEntity();
         }
 
+        /**
+         * index가 존재할 때까지 엔티티를 만들어 capacity를 늘린다.
+         *
+         * ⚠️ 함정: 이건 free list가 비어 있을 때만 의도대로 동작한다. free list에 index가
+         * 남아 있으면 `CreateEntity()`가 그걸 먼저 회수해버려서 capacity가 안 늘고
+         * free list만 갉아먹힌다. 그래서 스냅샷 적용 경로는 이 함수에 기대지 않고
+         * `RestoreEntities()`로 엔티티 상태를 **먼저** 복원한 뒤,
+         * 컴포넌트가 살아 있는 index만 가리키는지 검사한다(`World::ApplySnapshot`).
+         */
         void EnsureEntityExists(EntityIndex index) {
             while (m_entityManager.EntityCapacity() <= index) {
                 m_entityManager.CreateEntity();
             }
+        }
+
+        /// @brief 엔티티(EntityManager) 상태만 스냅샷으로 뜬다. 컴포넌트는 포함하지 않는다.
+        [[nodiscard]] EntitySnapshot CreateEntitySnapshot() const {
+            return m_entityManager.CreateSnapshot();
+        }
+
+        /// @brief 엔티티 상태를 스냅샷으로 되돌린다. 컴포넌트 풀은 건드리지 않는다.
+        /// @return 스냅샷이 자기모순이면 false(그 경우 아무것도 바뀌지 않는다).
+        [[nodiscard]] bool RestoreEntities(const EntitySnapshot& snapshot) {
+            return m_entityManager.RestoreFrom(snapshot);
         }
 
         void Clear() {
