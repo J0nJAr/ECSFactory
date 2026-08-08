@@ -136,6 +136,40 @@ UI를 렌더링 중간에 끼우는 이유: **UI는 카메라가 필요 없어�
 
 ---
 
+## 2.6. CI와 버전 관리
+
+### 3단 그물
+
+| 단계 | 무엇 | 언제 |
+|---|---|---|
+| **로컬 pre-push 훅** | `default` 프리셋 증분 빌드 + `ctest` | `git push` 직전. 보통 몇 초 |
+| **GitHub Actions** | 깨끗한 MSYS2 UCRT64 환경에서 **Debug와 Release 둘 다** 빌드·테스트 | 모든 브랜치 push / PR |
+| **설계 규칙 검사** | `GameServer` 바이너리가 DX11/DXGI를 임포트하지 않는지 | CI 매 실행 |
+
+훅 설치(clone 후 1회): `powershell -File tools/Install-GitHooks.ps1`
+급할 때 우회: `git push --no-verify` — 습관이 되면 훅이 무의미해진다.
+
+> **왜 설계 규칙까지 CI가 보나:** "빌드가 되는가"와 "설계가 지켜지는가"는 다른 문제다.
+> 누가 `GameServer`에 `EngineRender`를 링크해도 **빌드는 멀쩡히 통과한다.** 사람은 못 알아채고,
+> dedicated server에 GPU 의존이 슬금슬금 들어온다. 문서에만 적힌 규칙은 결국 깨진다.
+> 앞으로도 이런 종류의 불변식(결정론 규칙 등)은 가능한 한 **테스트나 CI로 못 박는다.**
+>
+> ⚠️ 단, 이 검사는 `Dx11Renderer`가 실제로 DX11을 호출하기 전(=R2 전)까지는
+> 링커가 미사용 임포트를 떨어뜨려서 통과가 쉽다. 회귀 방지 그물을 미리 쳐둔 것이다.
+
+**CI가 로컬과 다른 점:** 로컬은 `MinGW Makefiles`, CI는 `Ninja`를 쓴다. MSYS2 셸 안에서는 `sh.exe`가 PATH에 있어 MinGW Makefiles 생성기가 거부하고, Ninja가 더 빠르기도 하다. 컴파일러(ucrt64 g++)와 경고 세트(`-Wall -Wextra`)는 동일하다. 로컬 프리셋이 `CMAKE_CXX_COMPILER`에 `C:/msys64/...` 절대경로를 박고 있어서 `ci-debug` / `ci-release` 프리셋을 따로 둔다.
+
+### 버전
+
+| 수단 | 담당 |
+|---|---|
+| **git 태그 `milestone/<id>`** | 마일스톤 단위 기록. 로드맵 항목과 1:1 (`milestone/R0`, `milestone/U3` …) |
+| **`project(... VERSION)`** | 큰 눈금. 트랙 하나가 끝나면 minor를 올린다(R 트랙 완료 → `0.2.0`). 첫 결승선에서 `1.0.0` |
+
+버전은 `EF_VERSION_STRING` 등으로 코드에서 볼 수 있다 — 디버그 오버레이(U5)가 화면에 찍고, 나중에 handshake에서 클라·서버 버전 불일치를 거를 때 쓴다.
+
+---
+
 ## 3. 트랙 R — 렌더링
 
 `rendering-dx11.md` §8의 P0~P8을 그대로 쓴다. 각 단계의 "됐다" 기준은 그 문서의 표를 따른다. 여기서는 순서와 합류점만 다시 적는다.

@@ -59,6 +59,17 @@ ctest --preset default          # 전체 테스트 (실패 시 출력 표시)
 
 실행 파일은 `out/build/<preset>/bin/`에 떨어진다(`EngineCoreTests.exe`, `GameClient.exe`, `GameServer.exe`).
 
+빌드 타깃은 셋이다: `EngineCore`(로직) → `EngineRender`(창·렌더, `EngineCore`를 링크) → `GameClient`/`GameServer`. **`GameServer`는 `EngineRender`를 링크하지 않는다** — dedicated server에 DX11이 들어가면 안 된다. CI가 이걸 검사한다.
+
+### CI와 버전
+
+- **로컬 pre-push 훅** — 푸시 직전 빌드+테스트. 설치: `powershell -File tools/Install-GitHooks.ps1` (이 환경엔 `pwsh`가 없다. Windows PowerShell 5.1을 쓴다).
+- **GitHub Actions** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) — MSYS2 UCRT64에서 Debug/Release 둘 다 빌드·테스트. CI는 `ci-debug`/`ci-release` 프리셋(Ninja)을 쓴다. 로컬 프리셋은 컴파일러 절대경로를 박고 있어 러너에서 못 쓴다.
+- **설계 규칙 검사** ([tools/ci/check-server-no-dx11.sh](tools/ci/check-server-no-dx11.sh)) — 문서에만 적힌 규칙은 결국 깨진다. **불변식은 가능하면 테스트나 CI로 못 박을 것.**
+- **버전** — 마일스톤마다 git 태그 `milestone/<id>`, 트랙이 끝나면 `project(VERSION)` minor 상승. 코드에서는 `EF_VERSION_STRING`으로 보인다.
+
+> ⚠️ 한국어가 든 `.ps1`은 **UTF-8 BOM으로 저장**해야 한다. Windows PowerShell 5.1은 BOM 없는 UTF-8을 ANSI로 읽어서 출력이 깨진다.
+
 ### 테스트 하나만 돌리기
 
 테스트는 GoogleTest/Catch가 **아니라** 직접 만든 헤더 온리 하네스([tests/TestHarness.hpp](tests/TestHarness.hpp))를 쓴다. 케이스는 `TEST_CASE(Suite, Name)`으로 등록된다. 테스트 바이너리는 선택 인자로 `Suite.Name` 필터 하나를 받고, `ctest`에도 케이스가 개별 등록되어 있다.
@@ -75,7 +86,7 @@ ctest --preset default -R Network.LockstepConvergesTwoClientsOverLossyReordering
 CMake 소스 목록은 **글롭이 아니라 명시적**이다. 새 `.cpp`/`.hpp`는 해당 `CMakeLists.txt`에 등록되기 전까지 컴파일되지 않는다(`.cpp`는 `target_sources PRIVATE`, `EngineCore`의 `.hpp`는 `FILE_SET HEADERS` 블록). 손으로 편집하지 말고 헬퍼를 쓴다:
 
 ```powershell
-pwsh -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -RelativePath ECS/MyThing
+powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -RelativePath ECS/MyThing
 ```
 
 파일을 만들고 대상 타깃의 `CMakeLists.txt`에 등록까지 해준다. VS Code 태스크 **"CMake: Create C++ Artifact"**로도 같은 걸 할 수 있다. `-Kind`는 `pair`/`source`/`header`, `-Target`은 `EngineCore`/`GameClient`/`GameServer`/`tests`.

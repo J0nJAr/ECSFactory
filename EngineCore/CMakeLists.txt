@@ -60,6 +60,15 @@ target_sources(EngineCore
 target_include_directories(EngineCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(EngineCore PUBLIC cxx_std_20)
 
+# 엔진 버전을 코드에서 볼 수 있게 한다. 디버그 오버레이(U5)가 화면에 찍을 대상이고,
+# 나중에 클라/서버 버전 불일치를 handshake에서 거를 때도 쓴다.
+target_compile_definitions(EngineCore PUBLIC
+    EF_VERSION_STRING="${PROJECT_VERSION}"
+    EF_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    EF_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    EF_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+)
+
 if(WIN32)
     target_link_libraries(EngineCore PUBLIC ws2_32)
 endif()

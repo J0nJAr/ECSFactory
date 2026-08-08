@@ -1,0 +1,64 @@
+# ECSFactory CI
+#
+# 로컬 개발은 MSYS2 UCRT64 + "MinGW Makefiles"로 하지만, CI는 같은 컴파일러에
+# Ninja 생성기를 쓴다. MSYS2 셸 안에서는 sh.exe가 PATH에 있어 MinGW Makefiles
+# 생성기가 거부하는 문제가 있고, Ninja가 더 빠르기도 하다.
+# 컴파일러(ucrt64 g++)와 경고 세트(-Wall -Wextra)는 로컬과 동일하다.
+#
+# 프리셋이 나뉘어 있는 이유: 로컬 프리셋은 CMAKE_CXX_COMPILER에
+# C:/msys64/... 절대경로를 박아둬서 러너에서 그대로 못 쓴다.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["milestone/*"]
+  pull_request:
+  workflow_dispatch:
+
+# 같은 브랜치에 새 푸시가 오면 진행 중인 실행을 취소한다(러너 시간 절약).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build ${{ matrix.preset }}
+    runs-on: windows-latest
+
+    strategy:
+      # 한쪽이 깨져도 다른 쪽 결과를 봐야 원인 범위를 좁힐 수 있다.
+      fail-fast: false
+      matrix:
+        preset: [ci-debug, ci-release]
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: MSYS2 UCRT64 준비
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            binutils
+
+      - name: 구성
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: 빌드
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: 테스트
+        run: ctest --preset ${{ matrix.preset }}
+
+      # 빌드가 되는지가 아니라 설계 규칙이 지켜지는지를 본다.
+      - name: 설계 규칙 — 서버에 렌더 계층이 없어야 한다
+        run: bash tools/ci/check-server-no-dx11.sh out/build/${{ matrix.preset }}

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# pre-push 훅 — 푸시 전에 빌드와 테스트를 로컬에서 먼저 돌린다.
+#
+# 왜 두나: CI가 잡아주긴 하지만 결과를 보기까지 몇 분이 걸린다.
+# 여기서는 증분 빌드라 보통 몇 초다. 깨진 커밋을 원격에 올리지 않는 게 목적이고,
+# CI를 대체하려는 게 아니다(CI는 깨끗한 환경 + Release까지 본다).
+#
+# 설치: pwsh -File tools/Install-GitHooks.ps1
+# 건너뛰기: git push --no-verify   (급할 때만. 습관이 되면 훅이 무의미해진다)
+
+set -euo pipefail
+
+echo "[pre-push] 빌드와 테스트를 확인한다..."
+
+# 훅은 저장소 루트에서 실행되지만, 확실히 하기 위해 이동한다.
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v cmake >/dev/null 2>&1; then
+    echo "[pre-push] cmake를 찾을 수 없어 검사를 건너뛴다."
+    echo "           (PATH에 cmake가 없다면 이 훅은 아무것도 보증하지 못한다)"
+    exit 0
+fi
+
+# 구성이 안 되어 있으면 한 번 해준다. 되어 있으면 증분 빌드가 된다.
+if [[ ! -f "out/build/default/CMakeCache.txt" ]]; then
+    echo "[pre-push] default 프리셋을 구성한다(최초 1회)..."
+    cmake --preset default >/dev/null
+fi
+
+if ! cmake --build --preset default; then
+    echo ""
+    echo "[pre-push] ❌ 빌드 실패 — 푸시를 중단한다."
+    exit 1
+fi
+
+if ! ctest --preset default; then
+    echo ""
+    echo "[pre-push] ❌ 테스트 실패 — 푸시를 중단한다."
+    exit 1
+fi
+
+echo "[pre-push] ✅ 빌드·테스트 통과."

@@ -37,6 +37,31 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "ci-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "ci-debug",
+      "displayName": "CI Debug",
+      "inherits": "ci-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "ci-release",
+      "displayName": "CI Release",
+      "inherits": "ci-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
@@ -51,6 +76,14 @@
     {
       "name": "x64-release",
       "configurePreset": "x64-release"
+    },
+    {
+      "name": "ci-debug",
+      "configurePreset": "ci-debug"
+    },
+    {
+      "name": "ci-release",
+      "configurePreset": "ci-release"
     }
   ],
   "testPresets": [
@@ -71,6 +104,20 @@
     {
       "name": "x64-release",
       "configurePreset": "x64-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ci-debug",
+      "configurePreset": "ci-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ci-release",
+      "configurePreset": "ci-release",
       "output": {
         "outputOnFailure": true
       }
