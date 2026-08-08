@@ -24,6 +24,8 @@
 
 아래는 이 기능들을 왜 추가했고, 어디에 구현했는지에 대한 기록이다.
 
+> 2026-07-09 업데이트: 이 글은 `NetworkSyncSystem`을 처음 도입한 06 단계의 기록이다. 이후 M2에서 서버 입력 저장소는 `pendingInputs`/sequence 큐에서 `inputByTick` 슬롯 + `ConfirmInputs(tick)` 확정 모델로 바뀌었고, 서버는 확정 입력셋을 `InputFrame`으로 reliable 릴레이한다. 현재형 기술 설명은 [network-sync-system.md](../design/network-sync-system.md)와 [deterministic-input-lockstep.md](../design/deterministic-input-lockstep.md)를 기준으로 본다.
+
 ---
 
 ## `NetworkManager`는 패킷·연결 관리, `NetworkSyncSystem`가 실제 동기화 담당

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -12,25 +13,11 @@
 #include "Math/Fixed64.hpp"
 #include "Network/Endpoint.hpp"
 #include "Network/INetworkConnection.hpp"
+#include "Network/InputCommand.hpp"
 #include "Network/Packet.hpp"
 #include "Network/ReliabilityChannel.hpp"
 
 namespace EF {
-
-    struct InputCommand {
-        uint32_t clientId = 0;
-        uint64_t tick = 0;
-        uint32_t sequence = 0;
-        uint64_t buttonMask = 0;
-        // 마우스 룩 등은 화면 픽셀(float)이 아니라 결정론적 월드 의도(Fixed64)로 싣는다.
-        Fixed64 aimYaw = Fixed64::Zero();
-        Fixed64 aimPitch = Fixed64::Zero();
-    };
-
-    struct TickHash {
-        uint64_t tick = 0;
-        uint64_t worldHash = 0;
-    };
 
     struct NetworkClientState {
         uint32_t clientId = 0;
@@ -41,11 +28,12 @@ namespace EF {
         bool hasTypeTable = false;
         bool hasSnapshot = false;
         std::vector<ComponentTypeDescriptor> remoteTypes;
-        std::deque<InputCommand> pendingInputs;
+        std::map<uint64_t, InputCommand> inputByTick;
 
-        // 입력 시퀀스 추적: 중복/구식 InputCommand를 걸러내는 데 쓴다.
-        uint32_t lastInputSequence = 0;
-        bool hasInput = false;
+        // Server-confirmed input state. inputByTick holds not-yet-confirmed slots.
+        InputCommand lastConfirmed;
+        bool hasConfirmed = false;
+        uint64_t lastConfirmedTick = 0;
     };
 
     // 수신된 패킷 하나 + 보낸 사람 endpoint.
@@ -90,10 +78,9 @@ namespace EF {
             return m_clients;
         }
 
-        // 시퀀스 기준 중복/구식 입력은 폐기한다. 수락되면 true.
+        // Stores a future tick input if that client/tick slot is still open.
         bool EnqueueInput(const InputCommand& command);
-        [[nodiscard]] const std::deque<InputCommand>& PendingInputs(uint32_t clientId) const;
-        std::vector<InputCommand> ConsumePendingInputs(uint32_t clientId, uint64_t upToTick);
+        std::vector<InputCommand> ConfirmInputs(uint64_t tick);
 
         // 송신. target을 비워두면 연결의 기본 상대(DefaultTarget)로 보낸다.
         bool SendHello(const Network::Endpoint& target = {});
@@ -102,6 +89,7 @@ namespace EF {
         bool SendWorldSnapshotRequest(uint64_t lastKnownTick, const Network::Endpoint& target = {});
         bool SendWorldSnapshot(const WorldSnapshot& snapshot, const Network::Endpoint& target = {});
         bool SendInputCommand(const InputCommand& command, const Network::Endpoint& target = {});
+        bool SendInputFrame(const InputFrame& frame, const Network::Endpoint& target = {});
         bool SendTickHash(const TickHash& tickHash, const Network::Endpoint& target = {});
         bool SendResyncRequest(uint64_t tick, uint64_t localHash, uint64_t remoteHash,
                                const Network::Endpoint& target = {});
@@ -131,6 +119,8 @@ namespace EF {
 
         static std::vector<uint8_t> EncodeInputCommand(const InputCommand& command);
         static bool DecodeInputCommand(const std::vector<uint8_t>& payload, InputCommand& outCommand);
+        static std::vector<uint8_t> EncodeInputFrame(const InputFrame& frame);
+        static bool DecodeInputFrame(const std::vector<uint8_t>& payload, InputFrame& outFrame);
 
         static std::vector<uint8_t> EncodeTickHash(const TickHash& tickHash);
         static bool DecodeTickHash(const std::vector<uint8_t>& payload, TickHash& outTickHash);

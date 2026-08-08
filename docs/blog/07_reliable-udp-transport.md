@@ -67,19 +67,79 @@ bool Send(std::span<const uint8_t> message) {
 
 ## 3. 결정 1 — 서버 멀티플렉싱을 어디에 둘까
 
-다중 peer를 지원하는 방법은 크게 둘이었다.
+### 처음 의도한 그림: "커넥션 하나 = 클라 하나"
 
-**A. endpoint-aware `NetworkManager`** — 소켓 하나, `NetworkManager` 하나가 `endpoint↔clientId`를 직접 디먹스한다. `INetworkConnection`을 주소 기반으로 진화시키고, 클라는 서버 endpoint 하나만 쓴다.
+솔직히 처음 그린 그림은 이거였다. **연결(`INetworkConnection`) 하나가 클라이언트 하나를 담당한다.** 클라가 셋이면 서버에 연결이 셋 — 각 연결이 자기 클라만 상대하니 깔끔해 보인다.
 
-**B. endpoint별 가상 연결** — 멀티플렉서가 소켓 하나를 소유하고 endpoint마다 point-to-point 가상 연결을 발급한다. `NetworkManager`는 그대로 두되 서버가 클라마다 `NetworkManager`를 하나씩 갖는다.
+이 직관은 사실 **TCP의 그림**이다. TCP 서버는 `accept()` 할 때마다 그 클라 전용 소켓이 하나씩 생긴다. 그래서 "1 소켓 = 1 클라"가 공짜로 따라온다. 우리가 "연결"이라 하면 머릿속에 기본으로 떠오르는 게 대개 이 TCP 그림이다.
 
-**A를 골랐다.** 이유:
+### 그런데 UDP에선 그 그림이 안 통한다
 
-- 클라이언트는 본질적으로 서버 하나만 상대한다(point-to-point). **one-to-many가 필요한 건 서버뿐**이다. B는 이 비대칭을 "가상 연결"이라는 추가 개념으로 덮지만, 실제로 소켓은 하나뿐이라 그 추상화가 오히려 겉돈다.
-- 06까지의 서버 코드는 `world.GetResource<NetworkManager>()`로 **리소스 하나**를 잡는 구조다. B는 여기에 "월드당 N개의 `NetworkManager`"를 끼워야 해서 `NetworkSyncSystem`의 형태가 크게 바뀐다. A는 `NetworkManager` 하나가 내부에서 endpoint별 상태만 더 들면 된다.
-- 입력 패킷 payload의 `clientId`를 그대로 믿으면 스푸핑이 가능하다. A는 endpoint를 authoritative 키로 삼아 이 문제를 자연스럽게 닫는다.
+문제는 우리 서버가 **UDP**라는 것이다. UDP는 connectionless라서 클라마다 소켓이 생기지 않는다.
 
-그 대신 A는 `INetworkConnection`을 주소 기반으로 바꿔야 한다. 이게 결정 1의 대가다.
+> **비유.** TCP는 상대마다 깔리는 **전용 전화선**이다. 전화가 오면 회선이 하나 생기고, 그 회선은 그 사람만의 것이다.
+> UDP는 건물 앞 **공용 사서함 하나**다. 모두가 같은 주소(`서버ip:6780`)로 편지를 보내고, 서버는 그 사서함 하나에서 편지를 전부 꺼낸다. 누가 보냈는지는 **봉투의 발신인(sender 주소)** 을 봐야 안다.
+
+즉 UDP 서버는 소켓 **하나**에 모든 클라의 데이터그램이 섞여 들어온다(`recvfrom`이 발신인 주소를 함께 준다). 그래서 "연결 하나 = 클라 하나"를 UDP에서 하려면, **사서함에서 꺼낸 편지를 발신인별로 분류하는 사람**이 반드시 있어야 한다. 이 분류가 바로 **디먹스(demultiplexing)** 다.
+
+### 핵심 통찰 — 디먹스는 못 피한다, "어디서 하냐"만 다르다
+
+여기가 이 결정의 전부다. UDP 서버인 이상 발신인별 분류는 **어차피 해야 한다.** 남는 선택은 *그 분류를 어느 계층에서 하느냐* 뿐이다.
+
+**A. endpoint-aware `NetworkManager`** — `NetworkManager` 하나가 사서함(소켓 하나)을 직접 열고, 편지를 `endpoint → (clientId, ReliabilityChannel)`로 분류한다. 클라별 상태는 `NetworkManager` 안 endpoint별 칸에 들어간다.
+
+**B. endpoint별 `NetworkManager`** — 멀티플렉서가 사서함을 열어 발신인별 바구니(가상 `INetworkConnection`)에 나눠 담고, 서버는 그 바구니(=연결)마다 `NetworkManager`를 하나씩 붙인다. 이러면 겉보기엔 "연결 하나 = 클라 하나"가 되지만, 월드 안에는 클라 수만큼 manager가 생긴다.
+
+**C. multi-connection `NetworkManager`** — 원래 의도에 가장 가까운 그림이다. `NetworkManager` 하나가 여러 `INetworkConnection`을 들고, 각 connection을 `clientId`와 묶는다. 즉 월드에는 manager가 하나만 있고, manager 내부에 `clientId -> IConnection` 또는 `endpoint -> IConnection` 테이블이 있다.
+
+**셋 다 디먹스를 한다.** B/C라고 분류를 안 하는 게 아니라, 그 분류를 어디에 둘지 다를 뿐이다. B는 `NetworkManager` 바깥의 멀티플렉서가, C는 `NetworkManager` 안의 connection 테이블이, A는 `NetworkManager` 안의 endpoint 테이블이 맡는다.
+
+**A. 지금 구현: endpoint-aware `NetworkManager`**
+
+```text
+UDP socket
+  -> NetworkManager 1개
+       -> endpoint table
+            -> endpoint A: clientId 1 + ReliabilityChannel 1
+            -> endpoint B: clientId 2 + ReliabilityChannel 2
+```
+
+**B. endpoint별 `NetworkManager`**
+
+```text
+UDP socket
+  -> UdpMultiplexer
+       -> virtual INetworkConnection 1 -> NetworkManager 1
+       -> virtual INetworkConnection 2 -> NetworkManager 2
+```
+
+**C. multi-connection `NetworkManager`**
+
+```text
+UDP socket
+  -> connection demux
+       -> INetworkConnection 1 --+
+       -> INetworkConnection 2 --+-> NetworkManager 1개
+                                      -> clientId -> INetworkConnection table
+```
+
+### 왜 A를 골랐나
+
+- **비대칭이 실제로 그렇다.** 클라이언트는 본질적으로 서버 하나만 상대한다(point-to-point). one-to-many가 필요한 건 **서버뿐**이다. B의 "가상 연결"은 소켓이 하나뿐인 현실 위에 개념을 하나 더 얹는 셈이라 오히려 겉돈다.
+- **06 구조와 맞물린다.** 06까지 서버 코드는 `world.GetResource<NetworkManager>()`로 리소스 **하나**를 잡는다. B는 "월드당 N개의 `NetworkManager`"를 끼워야 해서 `NetworkSyncSystem`의 서버 루프를 크게 뜯어야 한다. A는 `NetworkManager` 하나가 내부에 endpoint별 상태만 더 들면 끝난다.
+- **C와 A는 거의 같은 책임을 진다.** C의 `IConnection` 여러 개도 UDP에서는 결국 같은 소켓에서 온 endpoint를 나눈 가상 connection이다. 그래서 이번 구현에서는 가상 connection 객체를 만들기보다, 그 테이블을 endpoint/channel/state로 바로 들었다.
+- **스푸핑이 공짜로 막힌다.** 입력 payload의 `clientId`를 믿으면 남을 사칭할 수 있다. A는 **발신인 endpoint**(봉투의 발신인은 위조가 어렵다)를 authoritative 키로 삼아 이 문제를 자연스럽게 닫는다.
+
+그 대신 A는 `INetworkConnection`을 주소 기반(`SendTo`/`ReceiveFrom`)으로 바꿔야 한다. 이게 결정 1의 대가다.
+
+### 사실 "1 연결 = 1 클라"는 이미 반쯤 이뤄져 있다
+
+처음 의도한 그림이 완전히 사라진 건 아니다.
+
+- **호스트/싱글플레이(`MemoryConnection`)** 는 pair 구조라 지금도 **연결 하나 = 상대 하나**다. 여기선 사서함을 공유하지 않으니 디먹스가 아예 필요 없다.
+- **원격 UDP 서버**에서만 사서함이 공유되어 디먹스가 생기고, 그 분류를 A는 `NetworkManager` 안에 둔 것이다.
+
+그리고 클라별 분리(각자의 `ReliabilityChannel`, `NetworkClientState`)는 A에서도 **endpoint별로 이미 존재한다.** 단지 그걸 `INetworkConnection`이라는 겉껍데기로 감싸지 않았을 뿐이다. 나중에 접속/끊김을 연결 객체 단위로 다루고 싶어지면, A의 endpoint 테이블을 C의 `clientId -> IConnection` 테이블 형태로 감싸는 선택지는 열려 있다.
 
 ---
 
@@ -95,36 +155,55 @@ UDP는 손실/중복/순서뒤바뀜이 기본이다. 방법은 셋이었다.
 
 | 채널 | 대상 | 보장 | 왜 |
 |---|---|---|---|
-| **Reliable** | Hello / Welcome / TypeTable / **WorldSnapshot** / SnapshotRequest / Resync | ack + 재전송 + 조각화 + 순서 | 하나라도 유실되면 세션이 안 뜨거나 멈춘다 |
+| **Reliable** | Hello / Welcome / TypeTable / **WorldSnapshot** / SnapshotRequest / Resync / **InputFrame** | ack + 재전송 + 조각화 + 순서 | 하나라도 유실되면 세션이 안 뜨거나 lockstep 입력 스트림이 멈춘다 |
 | **Sequenced** | TickHash | 최신만, 구식 폐기 | 검증용 체크섬이라 옛 값은 무의미. 재전송하면 오히려 낭비 |
-| **Unreliable** | InputCommand | 전부 전달 | 손실은 다음 tick 입력이 덮음. dedup은 앱 계층(`EnqueueInput`)이 이미 함 |
+| **Unreliable** | InputCommand (클라→서버 제출) | 재전송·순서 없이 즉시 전달 | 저지연 우선. **손실을 어떻게 견디는지는 transport가 아니라 입력 모델의 몫** → 08 |
 
 핵심 판단 하나: **WorldSnapshot을 reliable에 둔다.** 스냅샷은 크지만(초기 동기화/리싱크의 근거) 유실되면 클라가 멈추므로, 재전송+조각화가 반드시 필요하다. 반대로 TickHash를 reliable에 두면 매 틱 재전송 큐가 쌓여 낭비다 — 그래서 sequenced.
 
 신뢰 채널의 알고리즘은 **go-back-N + 누적 ack**로 갔다. 선택적 재전송(selective repeat)이 더 효율적이지만, 제어 채널은 트래픽이 적고 스냅샷은 드물어서 go-back-N의 단순함이 더 값지다. (조각 단위 선택적 ack는 남은 과제로 미룬다.)
 
+### 입력의 신뢰성은 여기서 정하지 않는다 (→ 08)
+
+위 표에서 `InputCommand`를 unreliable로 둔 건 **transport 관점의 기본값**일 뿐이다("일단 저지연으로 던진다"). 하지만 *"입력이 유실되면 어떻게 되나, 발사 같은 행동 입력은 믿어줘야 하지 않나"* 는 transport가 아니라 **입력 모델(결정론 lockstep)** 의 문제다. 여기서 깊이 파면 층위가 섞여 오히려 이상해진다.
+
+이 엔진의 실제 입력 흐름은 다음 글에서 다룬다. 미리 골자만:
+
+- **클라 → 서버** : `InputCommand`(미래 tick 입력)를 unreliable + **이중화**(최근 N tick 함께 전송)로 제출.
+- **서버 → 전 클라** : 서버가 그 tick의 입력을 확정한 뒤 `InputFrame`(확정 입력셋)을 **reliable로 재전파**(lockstep). 이건 위 **reliable 채널을 그대로 탄다.**
+- 서버·모든 클라가 같은 확정 입력으로 결정론 시뮬레이션 → 상태 일치, `TickHash`로 검증.
+
+즉 07의 채널 분리는 **"그릇"** 이고, 입력을 어떤 그릇에 담아 어떻게 흘릴지는 **결정론 입력 파이프라인**이 정한다. M2에서 `DeliveryClassFor`에는 `InputFrame → Reliable`이 실제로 추가됐다.
+
 ---
 
-## 5. 결정 3 — 기존 테스트를 어떻게 안 깨뜨릴까 (가장 미묘한 판단)
+## 5. 결정 3 — 보내는 순간과 재전송 tick을 분리한다
 
-신뢰성 계층을 끼우면 **타이밍 모델이 바뀐다.** 05/06의 테스트는 이렇게 생겼다.
+`ReliabilityChannel`을 넣으면 헷갈리는 지점이 하나 생긴다. 신뢰성은 보통 tick 기반이다. 보내고, ack를 기다리고, ack가 안 오면 다음 tick에 재전송한다.
+
+그렇다고 `SendHello()`가 다음 tick까지 아무것도 안 보내면 불편하다. `Hello`, `Welcome`, `SnapshotRequest` 같은 제어 패킷은 호출한 순간 바로 선로에 올라가는 편이 자연스럽다.
+
+그래서 송신을 두 단계로 나눴다.
+
+1. **최초 전송은 즉시 한다.**
+2. **재전송과 ack flush는 tick에서 한다.**
+
+05/06의 사용 방식은 이렇게 생겼다.
 
 ```cpp
 client.SendHello();               // 보내고
 auto p = server.TryReceivePacket(); // 바로 받는다  ← 틱 루프 없음
 ```
 
-그런데 "제대로 된" 신뢰성은 보통 tick 기반이다 — 보낼 걸 큐에 쌓고, 매 틱 flush하고, ack 안 오면 재전송. 이 모델을 그대로 넣으면 `SendHello()` 직후 `TryReceivePacket()`은 **아무것도 못 받는다**(아직 flush 안 됨). 기존 동기식 네트워크 테스트가 전부 깨진다.
+이 흐름을 유지하려고 `SendX`에서 한 번 즉시 flush한다.
 
-그래서 이렇게 판단했다. **신뢰성은 항상 켜두되, `SendX`는 즉시 flush한다.**
+- `SendX()` → `ReliabilityChannel`에 record enqueue → 그 자리에서 `Flush()` → `INetworkConnection::SendTo()`
+- `TryReceive()` → 연결에서 받은 datagram을 channel에 넣고, 전달 가능한 record를 packet으로 복원
+- `Update(tick)` → ack, 재전송, keepalive 처리
 
-- `SendX()` → 채널에 레코드 enqueue → **그 자리에서 Flush → 데이터그램 1개를 즉시 전송**.
-- `TryReceive()` → 델리버 큐가 비었으면 **연결을 pump(모든 데이터그램을 채널에 흘려 넣음)** → 델리버된 레코드를 pop.
-- 재전송/ack/keepalive는 매 틱 `Update(tick)`가 담당.
+즉 `SendX()`는 "첫 발을 즉시 쏜다." `Update(tick)`는 "못 받은 것들을 다시 챙긴다." 역할이 다르다.
 
-이렇게 하면 무손실 경로(`MemoryConnection`/호스트)에서는 `SendHello()`가 즉시 데이터그램을 내보내고 상대의 `TryReceive()`가 즉시 pump해서 델리버한다 — **05/06과 똑같은 동기 왕복**이다. 재전송은 손실이 있는 경로에서 `Update(tick)` 루프가 돌 때만 의미가 생긴다.
-
-> 결과: 이 판단 덕분에 기존 동기식 네트워크 테스트가 한 줄도 안 바뀌고 그대로 통과했다. 신뢰성은 "추가"됐지 "치환"되지 않았다.
+이 판단 덕분에 무손실 경로(`MemoryConnection`/호스트)는 예전처럼 즉시 주고받고, 손실이 있는 경로(`SimulatedNetwork`/UDP)는 tick 루프에서 재전송으로 수렴한다.
 
 ---
 
@@ -201,9 +280,21 @@ public:
 
 ---
 
-## 9. `ReliabilityChannel` — 이 글의 심장
+## 9. `ReliabilityChannel` — 연결이 아니라 포장 규칙이다
 
 endpoint 하나에 대한 신뢰성 상태 머신. 앱 레코드(`[type][payload]`)를 데이터그램으로 포장하고, 반대로 데이터그램에서 순서·재조립까지 끝난 레코드를 뽑아낸다.
+
+`ReliabilityChannel`은 `INetworkConnection`과 역할이 다르다.
+
+| 계층 | 아는 것 | 하는 일 | 모르는 것 |
+|---|---|---|---|
+| `INetworkConnection` | endpoint, 소켓/메모리 큐 | datagram bytes를 보내고 받음 | 패킷 타입, ack, 재전송, 조각 |
+| `ReliabilityChannel` | seq, ack, 조각, 채널 보장 | record를 datagram bytes로 포장/복원 | 소켓, IP 주소, 실제 전송 방법 |
+| `NetworkManager` | packet type, clientId, endpoint table | packet을 record로 만들고 channel/connection을 연결 | gameplay 규칙 |
+
+짧게 말하면 `INetworkConnection`은 **운반 수단**이고, `ReliabilityChannel`은 **운반할 상자를 포장하고 분실 시 다시 보내는 규칙**이다. 그래서 `ReliabilityChannel`은 혼자서는 네트워크로 아무것도 못 보낸다. 항상 `NetworkManager`가 `ReliabilityChannel::Flush()` 결과를 `INetworkConnection::SendTo()`에 넘겨야 한다.
+
+> **이름값 주의 — "신뢰성"만 하는 게 아니다.** `ReliabilityChannel`이라는 이름은 제일 무거운 **reliable 레인**을 딴 것뿐이다. 실제로는 *한 endpoint의 datagram 스트림에 3개 전달 등급(reliable / sequenced / unreliable)을 다중화하는* 계층이다. 그래서 `sequenced`(TickHash)·`unreliable`(입력) 패킷도 **여기를 그대로 통과한다** — 그저 ack·재전송을 안 걸 뿐, 포장/프레이밍/데이터그램 packing은 똑같이 이 계층이 한다. 즉 "신뢰성 채널"이라기보다 **endpoint별 전송 채널(포장 규칙) + 그중 reliable 레인만 ack/재전송을 붙인 것**으로 이해하는 게 정확하다. (이름만 보고 "비신뢰 패킷은 왜 여기 지나가지?" 하면 헷갈린다 — 다중화 계층이라 다 지나가는 게 맞다.)
 
 ### 9.1 와이어 포맷
 
@@ -284,6 +375,24 @@ flowchart TB
 
 이 셋은 소켓 없이 `ReliabilityChannel` 두 개만으로 검증한다 — 계층을 분리한 보람이다.
 
+### 9.6 배칭: 언제 여러 개가 한 통에 묶이나
+
+*"한 datagram에 메시지 여러 개를 모아 보내나, 하나씩 바로 보내나?"* 는 헷갈리기 쉽다. 답은 **정책(5장)과 packing(9.3)이 합쳐진 결과**다.
+
+- **`Flush`는 배처(packer)다.** 호출된 그 순간 채널에 쌓여 있는 메시지들을 1200B까지 한 datagram에 욱여넣고(packing), 넘치면 다음 datagram을 시작한다. 반대로 큰 메시지 하나는 1024B 조각들로 쪼갠다(1→N).
+- **하지만 정책이 "즉시 flush"라, 대개 쌓일 틈이 없다.** `SendX` 하나 = enqueue + 그 자리에서 `Flush` = 그 메시지 하나만 담긴 datagram. 그래서 같은 tick에 `SendWelcome()` → `SendTypeTable()`을 이어 부르면 **각각 datagram 하나씩**, 총 2개가 나간다(한 통에 안 묶임).
+
+| 상황 | datagram |
+|---|---|
+| 작은 메시지, `SendX` 1번 | 1개 (즉시 발사) |
+| 큰 메시지(>1024B) | 여러 조각으로 분할 (1→N) |
+| 같은 tick에 `SendX` 여러 번 | 각각 따로 (배칭 **안 함**) |
+| `Update`에서 재전송 대상 여러 개 | 한 통에 묶임 (배칭 **함**) |
+
+**배칭이 실제로 일어나는 거의 유일한 지점**은 `Update(tick)`의 flush다. sequenced/unreliable은 `SendX`에서 이미 나가 비었으니, 여기서 묶이는 건 주로 **ack 안 된 신뢰 메시지가 여러 개 동시에 재전송 시점(4tick 경과)에 걸릴 때**다 — 그것들이 1200B까지 한 datagram에 함께 실린다.
+
+정리하면 **와이어 포맷과 `Flush`는 배칭을 지원하지만, 현재 정책(즉시 발사)에서는 배칭이 거의 안 일어난다.** 나중에 대역폭이 문제가 되면 *"`SendX`는 enqueue만 하고, flush는 tick당 한 번"* 으로 **정책만** 바꾸면 그 tick의 모든 메시지가 한 통에 배칭된다(즉시성↓ ↔ 효율↑). 와이어 포맷은 손대지 않는다 — 05에서 `[type][size]`로 한 프레임에 레코드를 여러 개 담을 수 있게 해둔 그 대비가 여기까지 이어진다.
+
 ---
 
 ## 10. `NetworkManager` — 라우팅과 채널을 엮다
@@ -302,7 +411,7 @@ flowchart LR
     G --> H["for 데이터그램: connection.SendTo(dest, dg)"]
 ```
 
-- `DeliveryClassFor(type)`: `TickHash→Sequenced`, `InputCommand→Unreliable`, 나머지→`Reliable`.
+- `DeliveryClassFor(type)`: `TickHash→Sequenced`, `InputCommand→Unreliable`, `InputFrame→Reliable`, 나머지→`Reliable`.
 - `target`을 비우면(`Endpoint::None`) `m_defaultTarget`(= 연결의 `DefaultPeer`, 클라의 서버)로 간다. 그래서 클라의 `SendHello()`는 서버로, 서버의 `SendWelcome(id, from)`은 그 클라로 간다.
 - `SendX`가 **즉시 flush**하는 게 5장의 판단이다.
 
@@ -437,6 +546,8 @@ hub 하나에 여러 host(endpoint)를 붙일 수 있어, **서버 하나가 두
 전송 계층(다중 peer + 신뢰성)은 닫았다. 남은 건 대부분 전송이 아니라 **게임플레이 계층** 주제라 이후로 미룬다.
 
 - **조각 단위 선택적 ack** — 지금은 go-back-N이라 한 조각만 잃어도 메시지 전체를 재전송한다. 큰 스냅샷엔 낭비.
+- **입력 이중화 + 클라 적용** — 서버가 확정 입력셋(`InputFrame`)을 reliable로 전 클라에 재전파하고, 클라가 이를 순서대로 적용하며, 클라→서버 입력을 3회 재전송하는 lockstep 최소판은 [08](08_deterministic-input-lockstep.md)에서 구현했다.
+- **틱 단위 배칭** — 지금은 `SendX`마다 즉시 발사라 데이터그램이 많다. `SendX`는 enqueue만 하고 tick당 한 번 flush하면 대역폭이 준다. (9.6 참고)
 - **endpoint 타임아웃/연결 종료** — 조용해진 클라를 지우는 로직이 없다.
 - **delta snapshot** — 전체 대신 변경분만. 전송량의 근본 절감.
 - **prediction / rollback** — 클라 예측과 서버 정정.

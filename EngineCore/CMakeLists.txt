@@ -4,6 +4,7 @@ target_sources(EngineCore
     PRIVATE
         Base/GameEngine.cpp
         ECS/EntityCommandBuffer.cpp
+        Gameplay/PlayerMovement.cpp
         Math/Math.cpp
         Network/MemoryConnection.cpp
         Network/NetworkManager.cpp
@@ -21,8 +22,10 @@ target_sources(EngineCore
             Base/IGameApp.hpp
             Base/Logger.hpp
             Base/Types.hpp
+            Components/PlayerControl.hpp
             Components/Transform.hpp
             Components/Velocity.hpp
+            Gameplay/PlayerMovement.hpp
             ECS/ComponentPool.hpp
             ECS/Core.hpp
             ECS/EntitiyManager.hpp
@@ -40,6 +43,7 @@ target_sources(EngineCore
             Math/Vector.hpp
             Network/Endpoint.hpp
             Network/INetworkConnection.hpp
+            Network/InputCommand.hpp
             Network/MemoryConnection.hpp
             Network/NetUtils.hpp
             Network/NetworkManager.hpp

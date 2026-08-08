@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <vector>
 
+#include "Components/PlayerControl.hpp"
 #include "Components/Transform.hpp"
 #include "Components/Velocity.hpp"
 #include "ECS/World.hpp"
+#include "Gameplay/PlayerMovement.hpp"
 #include "Network/Endpoint.hpp"
 #include "Network/MemoryConnection.hpp"
 #include "Network/NetworkManager.hpp"
@@ -73,6 +75,51 @@ namespace {
 
     EF::Fixed64 FixedTickDelta() {
         return EF::Fixed64::FromRaw(EF::Fixed64::Scale / 50);
+    }
+
+    EF::World CreateLockstepPlayerWorld(uint32_t clientId) {
+        EF::World world;
+        world.RegisterSnapshotComponent<EF::Transform>();
+        world.RegisterSnapshotComponent<EF::PlayerControl>();
+
+        const EF::EntityId entity = world.CreateEntity();
+        world.AddComponent<EF::Transform>(entity, EF::Transform{
+            .position = EF::Vector3(0, 0, 0),
+            .rotation = EF::Quaternion::Identity()
+        });
+        world.AddComponent<EF::PlayerControl>(entity, EF::PlayerControl{ .clientId = clientId });
+        return world;
+    }
+
+    EF::World CreateLockstepPlayersWorld(uint32_t count) {
+        EF::World world;
+        world.RegisterSnapshotComponent<EF::Transform>();
+        world.RegisterSnapshotComponent<EF::PlayerControl>();
+
+        for (uint32_t clientId = 1; clientId <= count; ++clientId) {
+            const EF::EntityId entity = world.CreateEntity();
+            world.AddComponent<EF::Transform>(entity, EF::Transform{
+                .position = EF::Vector3(0, 0, 0),
+                .rotation = EF::Quaternion::Identity()
+            });
+            world.AddComponent<EF::PlayerControl>(entity, EF::PlayerControl{ .clientId = clientId });
+        }
+        return world;
+    }
+
+    std::vector<EF::InputCommand> DrainInputCommands(EF::NetworkManager& network) {
+        std::vector<EF::InputCommand> commands;
+        while (auto packet = network.TryReceivePacket()) {
+            if (packet->type != EF::Network::PacketType::InputCommand) {
+                continue;
+            }
+
+            EF::InputCommand command;
+            if (EF::NetworkManager::DecodeInputCommand(packet->payload, command)) {
+                commands.push_back(command);
+            }
+        }
+        return commands;
     }
 }
 
@@ -148,13 +195,11 @@ TEST_CASE(Network, SyncSystemCompletesInitialSnapshotHandshake) {
     EXPECT_EQ(clientSync.LastSnapshotTick(), static_cast<uint64_t>(2));
     EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
 
-    const std::deque<EF::InputCommand>& pending = serverWorld.GetResource<EF::NetworkManager>().PendingInputs(1);
-    EXPECT_EQ(pending.size(), static_cast<std::size_t>(0));
-
     const EF::NetworkClientState* serverClient = serverWorld.GetResource<EF::NetworkManager>().FindClient(1);
     EXPECT_TRUE(serverClient != nullptr);
     EXPECT_TRUE(serverClient->hasControlledEntity);
     EXPECT_TRUE(serverClient->controlledEntity != EF::kNullEntity);
+    EXPECT_TRUE(serverClient->inputByTick.empty());
 
     static_cast<void>(serverSync);
 }
@@ -190,28 +235,164 @@ TEST_CASE(Network, SyncSystemSendsQueuedInputToServer) {
 
     EXPECT_EQ(clientWorld.GetResource<EF::NetworkManager>().LocalClientId(), static_cast<uint32_t>(1));
 
-    const std::deque<EF::InputCommand>& pending = serverNetwork.PendingInputs(1);
-    EXPECT_EQ(pending.size(), static_cast<std::size_t>(1));
-    EXPECT_EQ(pending.front().clientId, static_cast<uint32_t>(1));
-    EXPECT_EQ(pending.front().tick, static_cast<uint64_t>(4));
-    EXPECT_EQ(pending.front().sequence, static_cast<uint32_t>(1));
-    EXPECT_EQ(pending.front().buttonMask, static_cast<uint64_t>(0b101));
+    const EF::NetworkClientState* serverClient = serverNetwork.FindClient(1);
+    EXPECT_TRUE(serverClient != nullptr);
+    EXPECT_TRUE(serverClient->hasConfirmed);
+    EXPECT_EQ(serverClient->lastConfirmed.clientId, static_cast<uint32_t>(1));
+    EXPECT_EQ(serverClient->lastConfirmed.tick, static_cast<uint64_t>(4));
+    EXPECT_EQ(serverClient->lastConfirmed.sequence, static_cast<uint32_t>(0));
+    EXPECT_EQ(serverClient->lastConfirmed.buttonMask, static_cast<uint64_t>(0));
+    EXPECT_TRUE(serverClient->inputByTick.find(5) != serverClient->inputByTick.end());
+    EXPECT_EQ(serverClient->inputByTick.at(5).sequence, static_cast<uint32_t>(1));
+    EXPECT_EQ(serverClient->inputByTick.at(5).buttonMask, static_cast<uint64_t>(0b101));
+
+    EF::NetworkManager& clientNetwork = clientWorld.GetResource<EF::NetworkManager>();
+    auto framePacket = clientNetwork.TryReceivePacket();
+    EXPECT_TRUE(framePacket.has_value());
+    EXPECT_EQ(static_cast<int>(framePacket->type), static_cast<int>(EF::Network::PacketType::InputFrame));
+    EF::InputFrame frame;
+    EXPECT_TRUE(EF::NetworkManager::DecodeInputFrame(framePacket->payload, frame));
+    EXPECT_EQ(frame.tick, static_cast<uint64_t>(4));
+    EXPECT_EQ(frame.inputs.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(frame.inputs[0].clientId, static_cast<uint32_t>(1));
+    EXPECT_EQ(frame.inputs[0].buttonMask, static_cast<uint64_t>(0));
 }
 
-TEST_CASE(Network, ConsumePendingInputsReturnsAndRemovesInputsUpToTick) {
+TEST_CASE(Network, ConfirmInputsReturnsSortedInputsAndHoldsMissing) {
     EF::NetworkManager serverNetwork(EF::Network::MemoryConnection::CreatePair().second);
 
-    EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 1, .sequence = 1 }));
-    EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 3, .sequence = 2 }));
-    EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 2, .sequence = 3 }));
+    serverNetwork.RegisterClient(5);
+    serverNetwork.RegisterClient(2);
 
-    std::vector<EF::InputCommand> consumed = serverNetwork.ConsumePendingInputs(5, 2);
+    EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 10, .sequence = 1, .buttonMask = 5 }));
+    EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 2, .tick = 10, .sequence = 1, .buttonMask = 2 }));
 
-    EXPECT_EQ(consumed.size(), static_cast<std::size_t>(2));
-    EXPECT_EQ(consumed[0].tick, static_cast<uint64_t>(1));
-    EXPECT_EQ(consumed[1].tick, static_cast<uint64_t>(2));
-    EXPECT_EQ(serverNetwork.PendingInputs(5).size(), static_cast<std::size_t>(1));
-    EXPECT_EQ(serverNetwork.PendingInputs(5).front().tick, static_cast<uint64_t>(3));
+    std::vector<EF::InputCommand> confirmed = serverNetwork.ConfirmInputs(10);
+    EXPECT_EQ(confirmed.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(confirmed[0].clientId, static_cast<uint32_t>(2));
+    EXPECT_EQ(confirmed[0].buttonMask, static_cast<uint64_t>(2));
+    EXPECT_EQ(confirmed[1].clientId, static_cast<uint32_t>(5));
+    EXPECT_EQ(confirmed[1].buttonMask, static_cast<uint64_t>(5));
+
+    std::vector<EF::InputCommand> held = serverNetwork.ConfirmInputs(11);
+    EXPECT_EQ(held.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(held[0].tick, static_cast<uint64_t>(11));
+    EXPECT_EQ(held[0].buttonMask, static_cast<uint64_t>(2));
+    EXPECT_EQ(held[1].tick, static_cast<uint64_t>(11));
+    EXPECT_EQ(held[1].buttonMask, static_cast<uint64_t>(5));
+
+    EXPECT_FALSE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 10, .sequence = 2 }));
+}
+
+TEST_CASE(Network, ClientAppliesRelayedInputFramesInOrder) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World serverWorld = CreateLockstepPlayerWorld(1);
+    serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+    clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    clientWorld.FixedUpdate(dt, 1);
+    serverWorld.FixedUpdate(dt, 1);
+    clientWorld.FixedUpdate(dt, 2);
+    serverWorld.FixedUpdate(dt, 2);
+    clientWorld.FixedUpdate(dt, 3);
+
+    EXPECT_TRUE(clientSync.HasSnapshot());
+    EXPECT_EQ(clientSync.ClientSimTick(), static_cast<uint64_t>(2));
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    serverWorld.FixedUpdate(dt, 3);
+    clientSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
+    clientWorld.FixedUpdate(dt, 4);
+    EXPECT_EQ(clientSync.ClientSimTick(), static_cast<uint64_t>(3));
+
+    serverWorld.FixedUpdate(dt, 4);
+    clientWorld.FixedUpdate(dt, 5);
+    EXPECT_EQ(clientSync.ClientSimTick(), static_cast<uint64_t>(4));
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    serverWorld.FixedUpdate(dt, 5);
+    EXPECT_FALSE(clientWorld.ComputeHash() == serverWorld.ComputeHash());
+
+    clientWorld.FixedUpdate(dt, 6);
+    EXPECT_EQ(clientSync.ClientSimTick(), static_cast<uint64_t>(5));
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+}
+
+TEST_CASE(Network, ClientQueuesInputForEstimatedServerTickPlusDelay) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World serverWorld = CreateLockstepPlayerWorld(1);
+    EF::NetworkManager& serverNetwork = serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+    clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    clientWorld.FixedUpdate(dt, 1);
+    serverWorld.FixedUpdate(dt, 1);
+    clientWorld.FixedUpdate(dt, 2);
+    serverWorld.FixedUpdate(dt, 2);
+    clientWorld.FixedUpdate(dt, 3);
+    serverWorld.FixedUpdate(dt, 3);
+
+    clientSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
+    clientWorld.FixedUpdate(dt, 4);
+    EXPECT_EQ(clientSync.ServerTickEstimate(), static_cast<uint64_t>(3));
+
+    serverWorld.FixedUpdate(dt, 4);
+    const EF::NetworkClientState* clientState = serverNetwork.FindClient(1);
+    EXPECT_TRUE(clientState != nullptr);
+    EXPECT_TRUE(clientState->inputByTick.find(5) != clientState->inputByTick.end());
+    EXPECT_EQ(clientState->inputByTick.at(5).buttonMask, static_cast<uint64_t>(EF::kInputMoveRight));
+}
+
+TEST_CASE(Network, ClientResendsQueuedInputForRedundancyWindow) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World clientWorld;
+    EF::NetworkManager& clientNetwork = clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    clientNetwork.SetLocalClientId(9);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    EF::NetworkManager serverNetwork(serverConnection);
+    const EF::Fixed64 dt = FixedTickDelta();
+
+    clientSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveForward });
+
+    clientWorld.FixedUpdate(dt, 10);
+    std::vector<EF::InputCommand> first = DrainInputCommands(serverNetwork);
+    EXPECT_EQ(first.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(first[0].clientId, static_cast<uint32_t>(9));
+    EXPECT_EQ(first[0].tick, static_cast<uint64_t>(12));
+    EXPECT_EQ(first[0].sequence, static_cast<uint32_t>(1));
+
+    clientWorld.FixedUpdate(dt, 11);
+    std::vector<EF::InputCommand> second = DrainInputCommands(serverNetwork);
+    EXPECT_EQ(second.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(second[0].tick, first[0].tick);
+    EXPECT_EQ(second[0].sequence, first[0].sequence);
+
+    clientWorld.FixedUpdate(dt, 12);
+    std::vector<EF::InputCommand> third = DrainInputCommands(serverNetwork);
+    EXPECT_EQ(third.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(third[0].tick, first[0].tick);
+    EXPECT_EQ(third[0].sequence, first[0].sequence);
+
+    clientWorld.FixedUpdate(dt, 13);
+    EXPECT_TRUE(DrainInputCommands(serverNetwork).empty());
 }
 
 TEST_CASE(Network, SyncSystemRequestsAndAppliesResyncOnHashMismatch) {
@@ -241,12 +422,12 @@ TEST_CASE(Network, SyncSystemRequestsAndAppliesResyncOnHashMismatch) {
     });
     EXPECT_FALSE(clientWorld.ComputeHash() == serverWorld.ComputeHash());
 
-    serverWorld.FixedUpdate(dt, 4); // server sends TickHash
-    clientWorld.FixedUpdate(dt, 5); // client detects mismatch and sends ResyncRequest
+    serverWorld.FixedUpdate(dt, 3); // server sends frame/hash for the next simulated tick
+    clientWorld.FixedUpdate(dt, 4); // client applies frame 3, detects mismatch, sends ResyncRequest
     EXPECT_TRUE(clientSync.HasHashMismatch());
 
-    serverWorld.FixedUpdate(dt, 5); // server sends fresh snapshot
-    clientWorld.FixedUpdate(dt, 6); // client applies snapshot
+    serverWorld.FixedUpdate(dt, 4); // server sends fresh snapshot
+    clientWorld.FixedUpdate(dt, 5); // client applies snapshot
 
     EXPECT_FALSE(clientSync.HasHashMismatch());
     EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
@@ -282,8 +463,20 @@ TEST_CASE(Network, ServerClientConnectionTransfersInputAndSnapshot) {
     EXPECT_TRUE(decodedCommand.aimYaw == command.aimYaw);
     EXPECT_TRUE(decodedCommand.aimPitch == command.aimPitch);
     serverNetwork.EnqueueInput(decodedCommand);
-    EXPECT_EQ(serverNetwork.PendingInputs(7).size(), static_cast<std::size_t>(1));
-    EXPECT_EQ(serverNetwork.PendingInputs(7).front().buttonMask, command.buttonMask);
+    std::vector<EF::InputCommand> confirmed = serverNetwork.ConfirmInputs(command.tick);
+    EXPECT_EQ(confirmed.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(confirmed[0].clientId, command.clientId);
+    EXPECT_EQ(confirmed[0].buttonMask, command.buttonMask);
+
+    EXPECT_TRUE(serverNetwork.SendInputFrame(EF::InputFrame{ .tick = command.tick, .inputs = confirmed }));
+    auto framePacket = clientNetwork.TryReceivePacket();
+    EXPECT_TRUE(framePacket.has_value());
+    EXPECT_EQ(static_cast<int>(framePacket->type), static_cast<int>(EF::Network::PacketType::InputFrame));
+    EF::InputFrame decodedFrame;
+    EXPECT_TRUE(EF::NetworkManager::DecodeInputFrame(framePacket->payload, decodedFrame));
+    EXPECT_EQ(decodedFrame.tick, command.tick);
+    EXPECT_EQ(decodedFrame.inputs.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(decodedFrame.inputs[0].buttonMask, command.buttonMask);
 
     EXPECT_TRUE(serverNetwork.SendWorldSnapshot(serverWorld.CreateSnapshot(command.tick)));
     EXPECT_TRUE(ReceiveSnapshotInto(clientNetwork, clientWorld));
@@ -385,10 +578,12 @@ TEST_CASE(Network, ServerSynchronizesMultipleMemoryClientsWithDistinctAssignedId
     serverClientOneNetwork.EnqueueInput(clientOneInput);
     serverClientTwoNetwork.EnqueueInput(clientTwoInput);
 
-    EXPECT_EQ(serverClientOneNetwork.PendingInputs(1).size(), static_cast<std::size_t>(1));
-    EXPECT_EQ(serverClientTwoNetwork.PendingInputs(2).size(), static_cast<std::size_t>(1));
-    EXPECT_EQ(serverClientOneNetwork.PendingInputs(1).front().buttonMask, uint64_t{ 1 });
-    EXPECT_EQ(serverClientTwoNetwork.PendingInputs(2).front().buttonMask, uint64_t{ 2 });
+    std::vector<EF::InputCommand> confirmedOne = serverClientOneNetwork.ConfirmInputs(10);
+    std::vector<EF::InputCommand> confirmedTwo = serverClientTwoNetwork.ConfirmInputs(10);
+    EXPECT_EQ(confirmedOne.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(confirmedTwo.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(confirmedOne[0].buttonMask, uint64_t{ 1 });
+    EXPECT_EQ(confirmedTwo[0].buttonMask, uint64_t{ 2 });
 
     const EF::NetworkClientState* serverClientOne = serverClientOneNetwork.FindClient(1);
     const EF::NetworkClientState* serverClientTwo = serverClientTwoNetwork.FindClient(2);
@@ -547,23 +742,33 @@ TEST_CASE(Network, ResyncRequestCanTriggerSnapshotReapply) {
     EXPECT_EQ(clientWorld.ComputeHash(), serverHash);
 }
 
-TEST_CASE(Network, ServerDropsDuplicateAndStaleInputBySequence) {
+TEST_CASE(Network, ServerDeduplicatesInputByTickAndRejectsConfirmedPast) {
     EF::NetworkManager serverNetwork(EF::Network::MemoryConnection::CreatePair().second);
 
-    // 시퀀스가 증가하면 수락된다.
+    // 다른 tick 슬롯이면 수락된다.
     EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 1, .sequence = 1 }));
     EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 2, .sequence = 2 }));
 
-    // 같은 시퀀스(중복)와 과거 시퀀스(구식)는 폐기된다.
+    // 같은 tick 슬롯은 중복으로 폐기된다.
     EXPECT_FALSE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 2, .sequence = 2 }));
     EXPECT_FALSE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 1, .sequence = 1 }));
 
-    // 다시 증가하면 수락된다.
+    std::vector<EF::InputCommand> first = serverNetwork.ConfirmInputs(1);
+    EXPECT_EQ(first.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(first[0].sequence, static_cast<uint32_t>(1));
+    EXPECT_FALSE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 1, .sequence = 100 }));
+
+    // 아직 확정되지 않은 미래 tick은 계속 수락된다.
     EXPECT_TRUE(serverNetwork.EnqueueInput(EF::InputCommand{ .clientId = 5, .tick = 3, .sequence = 3 }));
 
-    EXPECT_EQ(serverNetwork.PendingInputs(5).size(), static_cast<std::size_t>(3));
-    EXPECT_EQ(serverNetwork.PendingInputs(5).front().sequence, static_cast<uint32_t>(1));
-    EXPECT_EQ(serverNetwork.PendingInputs(5).back().sequence, static_cast<uint32_t>(3));
+    std::vector<EF::InputCommand> second = serverNetwork.ConfirmInputs(2);
+    EXPECT_EQ(second.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(second[0].sequence, static_cast<uint32_t>(2));
+
+    const EF::NetworkClientState* state = serverNetwork.FindClient(5);
+    EXPECT_TRUE(state != nullptr);
+    EXPECT_EQ(state->inputByTick.size(), static_cast<std::size_t>(1));
+    EXPECT_TRUE(state->inputByTick.find(3) != state->inputByTick.end());
 }
 
 TEST_CASE(Network, ReliabilityChannelDeliversReliableInOrderDespiteReorder) {
@@ -700,10 +905,15 @@ TEST_CASE(Network, ServerRoutesToMultipleClientsThroughSingleNetworkManager) {
 
     const uint32_t idOne = clientOneNet.LocalClientId();
     const uint32_t idTwo = clientTwoNet.LocalClientId();
-    EXPECT_TRUE(serverNet.PendingInputs(idOne).size() >= static_cast<std::size_t>(1));
-    EXPECT_EQ(serverNet.PendingInputs(idTwo).size(), static_cast<std::size_t>(0));
-    EXPECT_EQ(serverNet.PendingInputs(idOne).front().buttonMask, static_cast<uint64_t>(0b111));
-    EXPECT_EQ(serverNet.PendingInputs(idOne).front().clientId, idOne);
+    const EF::NetworkClientState* serverClientOne = serverNet.FindClient(idOne);
+    const EF::NetworkClientState* serverClientTwo = serverNet.FindClient(idTwo);
+    EXPECT_TRUE(serverClientOne != nullptr);
+    EXPECT_TRUE(serverClientTwo != nullptr);
+    EXPECT_TRUE(serverClientOne->hasConfirmed);
+    EXPECT_TRUE(serverClientTwo->hasConfirmed);
+    EXPECT_EQ(serverClientOne->lastConfirmed.buttonMask, static_cast<uint64_t>(0b111));
+    EXPECT_EQ(serverClientOne->lastConfirmed.clientId, idOne);
+    EXPECT_EQ(serverClientTwo->lastConfirmed.buttonMask, static_cast<uint64_t>(0));
 }
 
 TEST_CASE(Network, SyncSystemConvergesOverLossyReorderingLink) {
@@ -736,6 +946,65 @@ TEST_CASE(Network, SyncSystemConvergesOverLossyReorderingLink) {
     // 손실/중복/재정렬에도 신뢰 채널이 결국 상태를 맞춘다.
     EXPECT_TRUE(clientSync.HasSnapshot());
     EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+}
+
+TEST_CASE(Network, LockstepConvergesTwoClientsOverLossyReorderingLink) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(20260709);
+    net.SetLoss(0.08f);
+    net.SetDuplicate(0.05f);
+    net.SetReorder(0.2f, 4);
+
+    const Endpoint serverEp = Endpoint::Memory(900);
+    const Endpoint clientOneEp = Endpoint::Memory(901);
+    const Endpoint clientTwoEp = Endpoint::Memory(902);
+
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientOneHost = net.CreateHost(clientOneEp, serverEp);
+    auto clientTwoHost = net.CreateHost(clientTwoEp, serverEp);
+
+    EF::World serverWorld = CreateLockstepPlayersWorld(2);
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientOneWorld;
+    EF::NetworkSyncSystem& clientOneSync = AttachClientWorld(clientOneWorld, clientOneHost);
+    clientOneWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+
+    EF::World clientTwoWorld;
+    EF::NetworkSyncSystem& clientTwoSync = AttachClientWorld(clientTwoWorld, clientTwoHost);
+    clientTwoWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    for (uint64_t tick = 1; tick <= 700; ++tick) {
+        if (clientOneSync.HasSnapshot()) {
+            if (tick >= 120 && tick < 128) {
+                clientOneSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
+            } else if (tick >= 128 && tick < 160) {
+                clientOneSync.QueueLocalInput(EF::InputCommand{});
+            }
+        }
+
+        if (clientTwoSync.HasSnapshot()) {
+            if (tick >= 130 && tick < 138) {
+                clientTwoSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveForward });
+            } else if (tick >= 138 && tick < 170) {
+                clientTwoSync.QueueLocalInput(EF::InputCommand{});
+            }
+        }
+
+        clientOneWorld.FixedUpdate(dt, tick);
+        clientTwoWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    EXPECT_TRUE(clientOneSync.HasSnapshot());
+    EXPECT_TRUE(clientTwoSync.HasSnapshot());
+    EXPECT_FALSE(clientOneSync.HasHashMismatch());
+    EXPECT_FALSE(clientTwoSync.HasHashMismatch());
+    EXPECT_EQ(clientOneWorld.ComputeHash(), serverWorld.ComputeHash());
+    EXPECT_EQ(clientTwoWorld.ComputeHash(), serverWorld.ComputeHash());
 }
 
 TEST_CASE(Network, LargeSnapshotReassemblesOverLossyLink) {

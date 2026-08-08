@@ -1,6 +1,12 @@
 #include "NetworkSyncSystem.hpp"
 
+#include "Gameplay/PlayerMovement.hpp"
+
 namespace EF {
+    namespace {
+        constexpr uint64_t kInputDelayTicks = 2;
+        constexpr uint32_t kInputRedundancySends = 3;
+    }
 
     NetworkSyncSystem::NetworkSyncSystem(NetworkSyncMode mode)
         : m_mode(mode) {
@@ -15,6 +21,9 @@ namespace EF {
 
         NetworkManager& network = world.GetResource<NetworkManager>();
         if (m_mode == NetworkSyncMode::Client) {
+            if (m_hasServerTickEstimate) {
+                ++m_serverTickEstimate;
+            }
             UpdateClient(world, network);
             SendQueuedLocalInputs(network, tick);
         } else {
@@ -46,6 +55,9 @@ namespace EF {
         while (auto received = network.TryReceive()) {
             HandlePacketOnClient(world, network, received->packet);
         }
+
+        ApplyBufferedInputFrames(world, network);
+        VerifyPendingTickHashes(world, network);
     }
 
     void NetworkSyncSystem::UpdateServer(World& world, NetworkManager& network, uint64_t tick) {
@@ -54,10 +66,17 @@ namespace EF {
         }
 
         // 등록된 모든 클라이언트에게 현재 월드 hash를 보낸다.
+        const std::vector<InputCommand> confirmed = network.ConfirmInputs(tick);
+        ApplyConfirmedInputs(world, confirmed);
+
         const uint64_t worldHash = world.ComputeHash();
         for (const auto& [clientId, state] : network.Clients()) {
             static_cast<void>(clientId);
             if (state.endpoint.IsValid()) {
+                network.SendInputFrame(InputFrame{
+                    .tick = tick,
+                    .inputs = confirmed
+                }, state.endpoint);
                 network.SendTickHash(TickHash{
                     .tick = tick,
                     .worldHash = worldHash
@@ -77,20 +96,78 @@ namespace EF {
                 command.clientId = network.LocalClientId();
             }
             if (command.tick == 0) {
-                command.tick = tick;
+                command.tick = (m_hasServerTickEstimate ? m_serverTickEstimate : tick) + kInputDelayTicks;
             }
             if (command.sequence == 0) {
                 command.sequence = m_nextInputSequence;
             }
 
-            if (!network.SendInputCommand(command)) {
-                break;
-            }
-
             if (m_localInputs.front().sequence == 0) {
                 ++m_nextInputSequence;
             }
+            m_redundantInputs.push_back(RedundantInput{
+                .command = command,
+                .remainingSends = kInputRedundancySends
+            });
             m_localInputs.pop_front();
+        }
+
+        for (auto it = m_redundantInputs.begin(); it != m_redundantInputs.end();) {
+            if (it->remainingSends == 0) {
+                it = m_redundantInputs.erase(it);
+                continue;
+            }
+
+            if (!network.SendInputCommand(it->command)) {
+                break;
+            }
+
+            --it->remainingSends;
+            if (it->remainingSends == 0) {
+                it = m_redundantInputs.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void NetworkSyncSystem::ApplyBufferedInputFrames(World& world, NetworkManager& network) {
+        static_cast<void>(network);
+        if (!m_hasSnapshot) {
+            return;
+        }
+
+        for (;;) {
+            const uint64_t nextTick = m_clientSimTick + 1;
+            auto frameIt = m_frameBuffer.find(nextTick);
+            if (frameIt == m_frameBuffer.end()) {
+                break;
+            }
+
+            ApplyConfirmedInputs(world, frameIt->second);
+            m_clientSimTick = nextTick;
+            m_frameBuffer.erase(frameIt);
+        }
+    }
+
+    void NetworkSyncSystem::VerifyPendingTickHashes(World& world, NetworkManager& network) {
+        if (!m_hasSnapshot) {
+            return;
+        }
+
+        for (auto it = m_pendingTickHashes.begin(); it != m_pendingTickHashes.end();) {
+            const uint64_t tick = it->first;
+            if (tick > m_clientSimTick) {
+                break;
+            }
+
+            const uint64_t remoteHash = it->second;
+            const uint64_t localHash = world.ComputeHash();
+            if (localHash != remoteHash) {
+                m_hasHashMismatch = true;
+                network.SendResyncRequest(tick, localHash, remoteHash);
+            }
+            it = m_pendingTickHashes.erase(it);
         }
     }
 
@@ -127,6 +204,18 @@ namespace EF {
                 m_hasSnapshot = true;
                 m_hasHashMismatch = false;
                 m_lastSnapshotTick = snapshot.tick;
+                m_clientSimTick = snapshot.tick;
+                m_serverTickEstimate = snapshot.tick;
+                m_hasServerTickEstimate = true;
+                m_frameBuffer.erase(m_frameBuffer.begin(), m_frameBuffer.upper_bound(m_clientSimTick));
+            }
+            break;
+        }
+
+        case Network::PacketType::InputFrame: {
+            InputFrame frame;
+            if (NetworkManager::DecodeInputFrame(packet.payload, frame) && m_hasSnapshot && frame.tick > m_clientSimTick) {
+                m_frameBuffer.try_emplace(frame.tick, std::move(frame.inputs));
             }
             break;
         }
@@ -135,10 +224,10 @@ namespace EF {
             TickHash tickHash;
             if (NetworkManager::DecodeTickHash(packet.payload, tickHash)) {
                 m_lastRemoteTickHash = tickHash;
-                const uint64_t localHash = world.ComputeHash();
-                if (m_hasSnapshot && localHash != tickHash.worldHash) {
-                    m_hasHashMismatch = true;
-                    network.SendResyncRequest(tickHash.tick, localHash, tickHash.worldHash);
+                m_serverTickEstimate = tickHash.tick;
+                m_hasServerTickEstimate = true;
+                if (m_hasSnapshot) {
+                    m_pendingTickHashes[tickHash.tick] = tickHash.worldHash;
                 }
             }
             break;

@@ -19,7 +19,8 @@ namespace EF::Network {
         InputCommand = 5,
         TickHash = 6,
         ResyncRequest = 7,
-        Welcome = 8
+        Welcome = 8,
+        InputFrame = 9
     };
 
     struct PacketHeader {

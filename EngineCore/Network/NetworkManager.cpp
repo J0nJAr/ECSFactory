@@ -1,5 +1,6 @@
 #include "NetworkManager.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <span>
 #include <utility>
@@ -27,6 +28,24 @@ namespace EF {
             type.size = static_cast<std::size_t>(size);
             type.alignment = static_cast<std::size_t>(alignment);
             return true;
+        }
+
+        void WriteInputCommand(Writer& writer, const InputCommand& command) {
+            writer.U32(command.clientId);
+            writer.U64(command.tick);
+            writer.U32(command.sequence);
+            writer.U64(command.buttonMask);
+            writer.WriteFixed64(command.aimYaw);
+            writer.WriteFixed64(command.aimPitch);
+        }
+
+        bool ReadInputCommand(Reader& reader, InputCommand& command) {
+            return reader.U32(command.clientId) &&
+                   reader.U64(command.tick) &&
+                   reader.U32(command.sequence) &&
+                   reader.U64(command.buttonMask) &&
+                   reader.ReadFixed64(command.aimYaw) &&
+                   reader.ReadFixed64(command.aimPitch);
         }
     }
 
@@ -78,46 +97,56 @@ namespace EF {
     }
 
     bool NetworkManager::EnqueueInput(const InputCommand& command) {
-        NetworkClientState& state = GetOrCreateClient(command.clientId);
-
-        // 시퀀스 기반 중복/구식 입력 폐기.
-        // 부호 있는 차이로 비교해 32비트 wraparound도 안전하게 처리한다.
-        if (state.hasInput &&
-            static_cast<int32_t>(command.sequence - state.lastInputSequence) <= 0) {
+        if (command.clientId == 0) {
             return false;
         }
 
-        state.hasInput = true;
-        state.lastInputSequence = command.sequence;
+        NetworkClientState& state = GetOrCreateClient(command.clientId);
+
+        // Deduplicate by client/tick slot and reject ticks already confirmed by the server.
+        if (command.tick <= state.lastConfirmedTick) {
+            return false;
+        }
+
         state.lastReceivedTick = command.tick;
-        state.pendingInputs.push_back(command);
-        return true;
+        return state.inputByTick.try_emplace(command.tick, command).second;
     }
 
-    const std::deque<InputCommand>& NetworkManager::PendingInputs(uint32_t clientId) const {
-        static const std::deque<InputCommand> kEmpty;
-        auto it = m_clients.find(clientId);
-        return it == m_clients.end() ? kEmpty : it->second.pendingInputs;
-    }
-
-    std::vector<InputCommand> NetworkManager::ConsumePendingInputs(uint32_t clientId, uint64_t upToTick) {
-        std::vector<InputCommand> consumed;
-        auto it = m_clients.find(clientId);
-        if (it == m_clients.end()) {
-            return consumed;
+    std::vector<InputCommand> NetworkManager::ConfirmInputs(uint64_t tick) {
+        std::vector<uint32_t> clientIds;
+        clientIds.reserve(m_clients.size());
+        for (const auto& [clientId, state] : m_clients) {
+            static_cast<void>(state);
+            clientIds.push_back(clientId);
         }
+        std::sort(clientIds.begin(), clientIds.end());
 
-        std::deque<InputCommand>& pending = it->second.pendingInputs;
-        for (auto inputIt = pending.begin(); inputIt != pending.end();) {
-            if (inputIt->tick <= upToTick) {
-                consumed.push_back(*inputIt);
-                inputIt = pending.erase(inputIt);
-            } else {
-                ++inputIt;
+        std::vector<InputCommand> confirmed;
+        confirmed.reserve(clientIds.size());
+        for (uint32_t clientId : clientIds) {
+            NetworkClientState& state = m_clients[clientId];
+
+            InputCommand command;
+            auto inputIt = state.inputByTick.find(tick);
+            if (inputIt != state.inputByTick.end()) {
+                command = inputIt->second;
+            } else if (state.hasConfirmed) {
+                command = state.lastConfirmed;
             }
+            command.clientId = clientId;
+            command.tick = tick;
+
+            state.lastConfirmed = command;
+            state.hasConfirmed = true;
+            state.lastConfirmedTick = tick;
+
+            auto eraseEnd = state.inputByTick.upper_bound(tick);
+            state.inputByTick.erase(state.inputByTick.begin(), eraseEnd);
+
+            confirmed.push_back(command);
         }
 
-        return consumed;
+        return confirmed;
     }
 
     Network::ReliabilityChannel::Delivery NetworkManager::DeliveryClassFor(Network::PacketType type) {
@@ -128,6 +157,8 @@ namespace EF {
             return Delivery::Sequenced;    // 최신만 의미 있음
         case PacketType::InputCommand:
             return Delivery::Unreliable;   // 손실은 다음 tick이 덮음, 앱 계층 dedup
+        case PacketType::InputFrame:
+            return Delivery::Reliable;
         default:
             return Delivery::Reliable;     // 제어/스냅샷은 반드시 도착
         }
@@ -159,6 +190,10 @@ namespace EF {
 
     bool NetworkManager::SendInputCommand(const InputCommand& command, const Network::Endpoint& target) {
         return SendPacket(Network::PacketType::InputCommand, EncodeInputCommand(command), target);
+    }
+
+    bool NetworkManager::SendInputFrame(const InputFrame& frame, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::InputFrame, EncodeInputFrame(frame), target);
     }
 
     bool NetworkManager::SendTickHash(const TickHash& tickHash, const Network::Endpoint& target) {
@@ -407,24 +442,42 @@ namespace EF {
 
     std::vector<uint8_t> NetworkManager::EncodeInputCommand(const InputCommand& command) {
         Writer writer;
-        writer.U32(command.clientId);
-        writer.U64(command.tick);
-        writer.U32(command.sequence);
-        writer.U64(command.buttonMask);
-        writer.WriteFixed64(command.aimYaw);
-        writer.WriteFixed64(command.aimPitch);
+        WriteInputCommand(writer, command);
         return writer.Take();
     }
 
     bool NetworkManager::DecodeInputCommand(const std::vector<uint8_t>& payload, InputCommand& outCommand) {
         Reader reader(payload);
-        return reader.U32(outCommand.clientId) &&
-               reader.U64(outCommand.tick) &&
-               reader.U32(outCommand.sequence) &&
-               reader.U64(outCommand.buttonMask) &&
-               reader.ReadFixed64(outCommand.aimYaw) &&
-               reader.ReadFixed64(outCommand.aimPitch) &&
-               reader.Finished();
+        return ReadInputCommand(reader, outCommand) && reader.Finished();
+    }
+
+    std::vector<uint8_t> NetworkManager::EncodeInputFrame(const InputFrame& frame) {
+        Writer writer;
+        writer.U64(frame.tick);
+        writer.U32(static_cast<uint32_t>(frame.inputs.size()));
+        for (const InputCommand& command : frame.inputs) {
+            WriteInputCommand(writer, command);
+        }
+        return writer.Take();
+    }
+
+    bool NetworkManager::DecodeInputFrame(const std::vector<uint8_t>& payload, InputFrame& outFrame) {
+        Reader reader(payload);
+        uint32_t count = 0;
+        if (!reader.U64(outFrame.tick) || !reader.U32(count)) {
+            return false;
+        }
+
+        outFrame.inputs.clear();
+        outFrame.inputs.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            InputCommand command;
+            if (!ReadInputCommand(reader, command)) {
+                return false;
+            }
+            outFrame.inputs.push_back(command);
+        }
+        return reader.Finished();
     }
 
     std::vector<uint8_t> NetworkManager::EncodeTickHash(const TickHash& tickHash) {
