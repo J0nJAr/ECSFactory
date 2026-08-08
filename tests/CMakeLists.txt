@@ -6,9 +6,12 @@ add_executable(EngineCoreTests
     NetworkTests.cpp
     RegistryViewTests.cpp
     SparseSetTests.cpp
+    UITests.cpp
 )
 
-target_link_libraries(EngineCoreTests PRIVATE EngineCore)
+# EngineRender는 EngineCore를 PUBLIC으로 링크하므로 둘 다 딸려온다.
+# UI 앵커 레이아웃(U3)이 EngineRender에 있어서 필요하다.
+target_link_libraries(EngineCoreTests PRIVATE EngineRender)
 target_compile_features(EngineCoreTests PRIVATE cxx_std_20)
 
 add_test(NAME EngineCoreTests.All COMMAND EngineCoreTests)
@@ -59,3 +62,14 @@ add_test(NAME SparseSet.RemoveMaintainsAccessToRemainingElements COMMAND EngineC
 add_test(NAME RegistryView.ViewWithRequiredComponentsFiltersEntities COMMAND EngineCoreTests RegistryView.ViewWithRequiredComponentsFiltersEntities)
 add_test(NAME RegistryView.ViewWithoutExcludedComponentsSkipsExcludedEntities COMMAND EngineCoreTests RegistryView.ViewWithoutExcludedComponentsSkipsExcludedEntities)
 add_test(NAME RegistryView.IteratorReturnsEntityIdAndComponentReferences COMMAND EngineCoreTests RegistryView.IteratorReturnsEntityIdAndComponentReferences)
+add_test(NAME UI.PresetAnchorRectsFollowScreenSpaceYDown COMMAND EngineCoreTests UI.PresetAnchorRectsFollowScreenSpaceYDown)
+add_test(NAME UI.PointAnchorPresetsPlaceChildRelativeToParentOrigin COMMAND EngineCoreTests UI.PointAnchorPresetsPlaceChildRelativeToParentOrigin)
+add_test(NAME UI.OffsetOnPointAnchorShiftsAlongScreenAxes COMMAND EngineCoreTests UI.OffsetOnPointAnchorShiftsAlongScreenAxes)
+add_test(NAME UI.PivotMovesTheReferencePoint COMMAND EngineCoreTests UI.PivotMovesTheReferencePoint)
+add_test(NAME UI.DefaultPivotKeepsPresetInsideParentCorner COMMAND EngineCoreTests UI.DefaultPivotKeepsPresetInsideParentCorner)
+add_test(NAME UI.StretchXFillsParentWidthAndTreatsOffsetAsMargin COMMAND EngineCoreTests UI.StretchXFillsParentWidthAndTreatsOffsetAsMargin)
+add_test(NAME UI.StretchYFillsParentHeightAndTreatsOffsetAsMargin COMMAND EngineCoreTests UI.StretchYFillsParentHeightAndTreatsOffsetAsMargin)
+add_test(NAME UI.StretchAllFillsParentWithUniformInset COMMAND EngineCoreTests UI.StretchAllFillsParentWithUniformInset)
+add_test(NAME UI.LayoutSpecSupportsAsymmetricStretchMargins COMMAND EngineCoreTests UI.LayoutSpecSupportsAsymmetricStretchMargins)
+add_test(NAME UI.CustomAnchorRectExpressesBottomAlignedFullWidthPanel COMMAND EngineCoreTests UI.CustomAnchorRectExpressesBottomAlignedFullWidthPanel)
+add_test(NAME UI.NestedResolutionAccumulatesParentOffsets COMMAND EngineCoreTests UI.NestedResolutionAccumulatesParentOffsets)
