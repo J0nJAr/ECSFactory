@@ -2,6 +2,21 @@
 
 외부 라이브러리 의존을 최소화한 C++20 기반 ECS 게임 엔진 실험 프로젝트입니다.
 
+## 프로젝트 성격
+
+**학습용 사이드 프로젝트**입니다. 상용 제품이 아니라, 두 가지 목표를 동시에 두고 만듭니다.
+
+1. **엔진/시스템 개발을 직접 만들면서 공부한다.** AI를 협업자로 쓰되, 돌아가는 코드만큼 *왜 그렇게 설계했는가*가 결과물입니다.
+2. **이 엔진 위에 공장(팩토리) 게임을 만든다.** 자동화·생산 라인 장르이고, 2D / 3D 중 어느 쪽으로 갈지는 아직 정하지 않았습니다(렌더링 방향은 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md) 참조).
+
+그래서 이 저장소의 규칙은 다음과 같습니다.
+
+- **주석은 일반적인 상용 코드보다 많이** 답니다. 문법을 다시 읽어주는 주석이 아니라 **설계 의도**(왜 이 형태인가, 호출자가 지켜야 할 불변식은 무엇인가)를 적습니다.
+- 클래스와 자명하지 않은 함수에는 **헤더 주석을 반드시** 답니다.
+- 비자명한 선택을 했으면 **버린 대안과 그 이유**도 같이 적습니다.
+- **틀린 주석은 없는 주석보다 나쁩니다.** 학습용 코드에서 잘못된 설명은 그대로 잘못 배우게 됩니다. 확실하지 않으면 확실하지 않다고 적습니다.
+- 문서·주석·커밋 메시지는 **한국어**로 씁니다.
+
 ---
 
 # 작업 스케치
@@ -9,30 +24,34 @@
 이 영역은 구현 전에 생각나는 계획, TODO, 설계 메모를 자유롭게 적는 공간입니다.
 아래의 구조 문서는 현재 코드 기준 설명이고, 이 위쪽은 계속 바뀌어도 됩니다.
 
-## 지금 생각 중인 것들
+> 📍 **마일스톤 전체 계획은 [docs/design/roadmap.md](docs/design/roadmap.md)에 있습니다.** 여기는 짧은 요약만 둡니다.
 
-- 서버랑 클라 월드는 만들어짐 -> 연결 흐름을 실제 게임 시스템에 붙여야 함
-- 서버와 클라를 연결할 때 타입 id/type table 교환
-- 이후 서버 월드 데이터를 snapshot으로 복사해서 클라가 적용
-- 모든 월드 데이터를 가져온 후 클라도 결정론적 시뮬레이션 시작
-- 클라와 서버는 `INetworkConnection`을 통해서만 통신
-- 호스트/싱글플레이는 `MemoryConnection`
-- 원격 클라는 `UDPConnection`
-- 월드 정보는 trivial component 기준 bit/raw byte 복사
-- 락스텝보다는 서버 시간에 맞춰 클라가 입력 전달
-- 특정 시간마다 hash 비교로 세션 유효성 확인
-- hash가 다르면 snapshot 재다운로드 및 적용
+## 끝난 것
+
+- ECS(Registry / ComponentPool / View / World)와 결정론 수학(`Fixed64` Q32.32)
+- 월드 snapshot 복사 + `ComputeHash()` 검증 + hash mismatch 자동 resync
+- 신뢰성 UDP 전송 — `Endpoint` 기반 다중 peer 라우팅, `ReliabilityChannel`(reliable / sequenced / unreliable), 조각화·재조립
+- 접속 handshake(`Hello → Welcome → TypeTable → WorldSnapshot`)를 `NetworkSyncSystem`이 fixed tick 안에서 처리
+- **결정론 입력 lockstep** — 클라가 미래 tick 입력을 제출하고, 서버가 확정(결측은 직전 입력 hold)해서 `InputFrame`으로 전 클라에 재전파하고, 모두가 같은 확정 입력으로 같은 시뮬을 돌림
+- `TickHash` 주기 송수신으로 디싱크 감지, 손실·재정렬 링크에서의 수렴 테스트
+
+> 초기 스케치에는 "락스텝보다는 서버 시간에 맞춰 클라가 입력 전달"이라고 적혀 있었지만,
+> 결국 **결정론 lockstep + 입력 릴레이**로 갔습니다. 이유는 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md) §1.2에 있습니다 —
+> `Fixed64`·`TickHash`·resync를 갖춘 이유가 애초에 그것이었기 때문입니다.
 
 ## 다음 할 일
 
-- 실제 게임 시스템에서 `NetworkManager` 패킷 처리 루프 연결
-- UDP 접속 handshake 완성
-- `InputManager` -> `InputCommand` 변환
-- 서버 tick 기준 입력 소비
-- `TickHash` 주기 송수신
-- hash mismatch 자동 resync
-- prediction/rollback/replay 정책 결정
-- UDP reliable ack/retry 정책 강화
+지금 순서는 **렌더링 → 엔진 위생 → 결정론 스폰 → 공장 게임플레이**입니다.
+
+1. **렌더링** (`docs/design/rendering-dx11.md` P0~P8) — Win32 창 → DX11 device → 쿼드 → 카메라 → `RenderSystem`.
+   목표는 "내 키보드 입력이 서버 확정을 거쳐 화면 속 엔티티를 움직인다".
+2. **`InputManager` → `InputCommand` 변환** — 창이 생긴 뒤 바로. 지금은 테스트가 `QueueLocalInput`을 직접 호출 중.
+3. **엔진 위생** — `SystemRegistry::SortSystems()`(현재 TODO, 등록 순서대로 실행 중), 렌더를 별도 CMake 타깃으로 분리해 서버가 DX11을 링크하지 않게.
+4. **결정론 스폰** ⚠️ — 건설 = 엔티티 스폰인데, 지금 `ApplySnapshot`이 `EntityManager` 상태(version / free list / next index)를 복원하지 않아 스냅샷 이후 서버·클라의 엔티티 index 할당이 갈라집니다. 공장 게임 전체의 전제조건입니다. [roadmap.md §6](docs/design/roadmap.md) 참조.
+5. **공장 게임플레이** — 그리드 좌표계 → 건설/철거 → 채굴기 → 벨트 → 저장고.
+   첫 결승선: **아이템이 채굴기에서 저장고까지 자동으로 흐르고, 그게 화면에 보이고, 클라와 서버 해시가 일치한다.**
+
+나중으로 미룬 것: prediction/rollback(공장 장르는 입력 지연 체감이 작아 정말 필요한지부터 확인), 텍스처/스프라이트, 3D 전환, 세이브 계층.
 
 ---
 ---
