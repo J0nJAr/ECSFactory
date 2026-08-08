@@ -89,13 +89,24 @@ anchorMaxPx = parent.min + parent.size * anchor.max
 
 anchor.min == anchor.max 인 축 (점 앵커):
     size는 지정값을 그대로 쓰고, pivot으로 기준점을 맞춘다
-    pos = anchorMinPx + offset - size * pivot
+    pos = anchorMinPx + offsetMin - size * pivot
 
 anchor.min != anchor.max 인 축 (stretch 앵커):
-    size는 부모를 따라가고, offset이 좌우 여백(margin)이 된다
+    size는 부모를 따라가고, offset이 양쪽 여백(margin)이 된다
     min = anchorMinPx + offsetMin
     max = anchorMaxPx - offsetMax
 ```
+
+> 📌 아래 세 항목은 U3 구현 중 이 사양이 **모순되거나 비어 있다는 것이 드러나** 확정한 내용이다.
+> 원래 문서가 틀렸던 것이므로 구현이 아니라 이 문서를 고쳤다.
+
+**(a) offset은 축마다 두 개다 (`offsetMin` / `offsetMax`).** 위 stretch 공식이 이미 두 개를 요구하는데 초안의 함수 서명은 `offset` 하나였다. 코어 구조체(`LayoutSpec`)는 둘 다 갖고, **편의 오버로드가 하나의 `offset`을 양쪽에 대칭으로 매핑**한다. 그래서 `StretchAll + offset{8,8}`은 "사방 8px 안쪽으로"가 된다 — §7.2의 로그 패널이 원하는 동작이다. 비대칭 여백(예: 40px 타이틀바를 피하는 패널)이 필요하면 `LayoutSpec`을 직접 쓴다.
+
+**(b) 기본 pivot은 앵커 프리셋을 따라간다.** Unity처럼 상수 `{0.5, 0.5}`가 아니라 `TopLeft → {0,0}`, `BottomRight → {1,1}`, `Center → {0.5,0.5}` 식으로 **앵커와 같은 모서리**를 쓴다.
+근거: 즉시형 호출부는 pivot을 생략하는 게 기본이라(§4) **그 기본값이 곧 화면에 보이는 결과**다. `{0.5,0.5}`를 기본으로 두면 §4의 `BeginPanel("debug", Anchor::TopRight, {320,200})`이 화면 밖으로 절반 튀어나간다. "우상단에 붙인다"는 말의 상식적 의미와 맞는 쪽을 기본으로 삼는다.
+
+**(c) `StretchX` / `StretchY`의 늘어나지 않는 축은 중앙(0.5)이다.** 중립값이고 offset으로 어느 방향으로든 갈 수 있다.
+"폭 100% 로그 패널"처럼 **아래에 붙는** 경우는 `StretchX`가 아니라 `AnchorRect{{0,1},{1,1}}`를 직접 준다(프리셋은 min/max 위의 표기 편의일 뿐이라 이게 가능하다). 이런 도킹 조합(`StretchTop` / `StretchBottom`)이 자주 필요해지면 그때 프리셋으로 승격한다 — 지금 넣으면 쓰이지도 않는 이름만 늘어난다.
 
 이 한 함수가 유지형·즉시형 **양쪽에서 그대로 쓰인다.** 그래서 U3(레이아웃 코어)이 두 트랙보다 먼저 온다.
 

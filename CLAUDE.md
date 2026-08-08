@@ -86,10 +86,16 @@ ctest --preset default -R Network.LockstepConvergesTwoClientsOverLossyReordering
 CMake 소스 목록은 **글롭이 아니라 명시적**이다. 새 `.cpp`/`.hpp`는 해당 `CMakeLists.txt`에 등록되기 전까지 컴파일되지 않는다(`.cpp`는 `target_sources PRIVATE`, `EngineCore`의 `.hpp`는 `FILE_SET HEADERS` 블록). 손으로 편집하지 말고 헬퍼를 쓴다:
 
 ```powershell
-powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -RelativePath ECS/MyThing
+powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -RelativePath ECS/MyThing.hpp
 ```
 
 파일을 만들고 대상 타깃의 `CMakeLists.txt`에 등록까지 해준다. VS Code 태스크 **"CMake: Create C++ Artifact"**로도 같은 걸 할 수 있다. `-Kind`는 `pair`/`source`/`header`, `-Target`은 `EngineCore`/`GameClient`/`GameServer`/`tests`.
+
+> ⚠️ **이 헬퍼에는 확인된 결함이 둘 있다. 고쳐지기 전까지는 손으로 등록하는 편이 안전하다.**
+> 1. **`-RelativePath`에 확장자를 빼면 `MyThing..hpp`(점 두 개)가 만들어진다.** `ChangeExtension(path, $null)`에 PowerShell이 `$null` 대신 빈 문자열을 넘겨서 끝에 점이 남는다. 확장자를 붙여서 부를 것.
+> 2. **`EngineRender` 타깃을 모른다.** `-Target EngineCore`로 부르면 `EngineRender`용 파일이 **조용히 `EngineCore`에 등록된다.** 빌드가 통과하므로 알아채기 어렵다. `EngineRender`에 파일을 추가할 때는 `EngineCore/CMakeLists.txt`의 **두 번째** `target_sources` 블록에 손으로 적을 것.
+>
+> (2번을 고치려는 시도가 있었으나 스크립트가 `EngineCore/CMakeLists.txt`를 통째로 비워버려 되돌렸다. 다시 시도한다면 **반드시 스크래치 사본에서 검증**하고, 저장소 파일에 직접 실행하지 말 것.)
 
 ### clangd / IDE 참고
 
