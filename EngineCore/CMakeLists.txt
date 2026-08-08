@@ -74,7 +74,12 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
-# EngineRender — 창과 렌더 백엔드.
+# EngineRender — 창과 렌더 백엔드, 그리고 UI.
+#
+# UI가 여기 있는 이유: UI는 ClientPresentation 전용이고 서버 빌드는 링크조차 하면 안 된다
+# (docs/design/ui-layer.md §0-3). 앵커 레이아웃은 순수 함수라 GPU가 없어도 돌지만,
+# 타깃을 EngineCore로 내리면 UI의 나머지(드로우 목록·폰트·히트테스트)가 따라 내려올 구실이
+# 생긴다. 처음부터 렌더 쪽에 둔다.
 #
 # EngineCore와 별도 타깃으로 두는 이유: GameServer가 DX11을 링크조차 하지 않게 하기 위함.
 # dedicated server는 창도 GPU도 없다. 나중에 분리하려면 의존이 얽힌 뒤라 비싸지므로
@@ -87,6 +92,7 @@ add_library(EngineRender STATIC)
 target_sources(EngineRender
     PRIVATE
         Render/Dx11/Dx11Renderer.cpp
+        UI/AnchorLayout.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -96,6 +102,7 @@ target_sources(EngineRender
             Render/IRenderer.hpp
             Render/RenderContext.hpp
             Render/RenderTypes.hpp
+            UI/AnchorLayout.hpp
 )
 
 target_link_libraries(EngineRender PUBLIC EngineCore)
