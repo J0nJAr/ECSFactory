@@ -367,9 +367,35 @@ namespace EF {
         return reader.Finished();
     }
 
+    /**
+     * WorldSnapshot 와이어 포맷 (프로토콜 v2).
+     *
+     *   u64  tick
+     *   u32  nextEntityIndex          ┐
+     *   u32  versionCount             ├ EntitySnapshot (v2에서 추가)
+     *   u32  version   × versionCount │
+     *   u32  freeCount                │
+     *   u32  freeIndex × freeCount    ┘
+     *   u32  typeCount ;   type × typeCount
+     *   u32  componentCount ; (type, u32 entityCount, u32 entity ×, u32 byteCount, bytes) ×
+     *
+     * `versionCount`는 `nextEntityIndex`와 항상 같지만(EntitySnapshot 불변식) 길이 접두는
+     * 그대로 붙인다 — 다른 배열과 형태를 맞추고, 디코더가 불변식을 가정하지 않게 하기 위해서다.
+     * 불일치 검사는 `EntityManager::RestoreFrom`이 한다.
+     */
     std::vector<uint8_t> NetworkManager::EncodeWorldSnapshot(const WorldSnapshot& snapshot) {
         Writer writer;
         writer.U64(snapshot.tick);
+
+        writer.U32(snapshot.entities.nextEntityIndex);
+        writer.U32(static_cast<uint32_t>(snapshot.entities.versions.size()));
+        for (EntityVersion version : snapshot.entities.versions) {
+            writer.U32(version);
+        }
+        writer.U32(static_cast<uint32_t>(snapshot.entities.freeIndices.size()));
+        for (EntityIndex freeIndex : snapshot.entities.freeIndices) {
+            writer.U32(freeIndex);
+        }
 
         writer.U32(static_cast<uint32_t>(snapshot.typeTable.size()));
         for (const ComponentTypeDescriptor& type : snapshot.typeTable) {
@@ -394,7 +420,39 @@ namespace EF {
         Reader reader(payload);
         uint32_t typeCount = 0;
         uint32_t componentCount = 0;
-        if (!reader.U64(outSnapshot.tick) || !reader.U32(typeCount)) {
+        if (!reader.U64(outSnapshot.tick) || !reader.U32(outSnapshot.entities.nextEntityIndex)) {
+            return false;
+        }
+
+        // 길이 접두를 믿고 reserve 하지 않는다 — 4바이트 카운트 하나로 수 GB를 예약하게
+        // 만들 수 있기 때문이다. push_back으로 늘리면 페이로드가 먼저 바닥나서 false가 난다.
+        uint32_t versionCount = 0;
+        if (!reader.U32(versionCount)) {
+            return false;
+        }
+        outSnapshot.entities.versions.clear();
+        for (uint32_t i = 0; i < versionCount; ++i) {
+            uint32_t version = 0;
+            if (!reader.U32(version)) {
+                return false;
+            }
+            outSnapshot.entities.versions.push_back(version);
+        }
+
+        uint32_t freeCount = 0;
+        if (!reader.U32(freeCount)) {
+            return false;
+        }
+        outSnapshot.entities.freeIndices.clear();
+        for (uint32_t i = 0; i < freeCount; ++i) {
+            uint32_t freeIndex = 0;
+            if (!reader.U32(freeIndex)) {
+                return false;
+            }
+            outSnapshot.entities.freeIndices.push_back(freeIndex);
+        }
+
+        if (!reader.U32(typeCount)) {
             return false;
         }
 

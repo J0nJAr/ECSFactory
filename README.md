@@ -47,7 +47,7 @@
    목표는 "내 키보드 입력이 서버 확정을 거쳐 화면 속 엔티티를 움직인다".
 2. **`InputManager` → `InputCommand` 변환** — 창이 생긴 뒤 바로. 지금은 테스트가 `QueueLocalInput`을 직접 호출 중.
 3. **엔진 위생** — `SystemRegistry::SortSystems()`(현재 TODO, 등록 순서대로 실행 중), 렌더를 별도 CMake 타깃으로 분리해 서버가 DX11을 링크하지 않게.
-4. **결정론 스폰** ⚠️ — 건설 = 엔티티 스폰인데, 지금 `ApplySnapshot`이 `EntityManager` 상태(version / free list / next index)를 복원하지 않아 스냅샷 이후 서버·클라의 엔티티 index 할당이 갈라집니다. 공장 게임 전체의 전제조건입니다. [roadmap.md §6](docs/design/roadmap.md) 참조.
+4. **결정론 스폰** — 건설 = 엔티티 스폰이라 공장 게임 전체의 전제조건입니다. `ApplySnapshot`이 `EntityManager` 상태(version / free list / next index)를 복원하지 않아 스냅샷 이후 index 할당이 갈라지던 문제는 **N1에서 해결**했고, 남은 것은 N2(스폰·디스폰을 확정 입력 경로에서만 일어나게 하기)입니다. [roadmap.md §6](docs/design/roadmap.md) 참조.
 5. **공장 게임플레이** — 그리드 좌표계 → 건설/철거 → 채굴기 → 벨트 → 저장고.
    첫 결승선: **아이템이 채굴기에서 저장고까지 자동으로 흐르고, 그게 화면에 보이고, 클라와 서버 해시가 일치한다.**
 
