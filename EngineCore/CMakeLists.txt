@@ -20,7 +20,9 @@ target_sources(EngineCore
             Base/Defines.hpp
             Base/GameEngine.hpp
             Base/IGameApp.hpp
+            Base/InputManager.hpp
             Base/Logger.hpp
+            Base/RingBuffer.hpp
             Base/Types.hpp
             Components/PlayerControl.hpp
             Components/Transform.hpp
@@ -60,4 +62,37 @@ target_compile_features(EngineCore PUBLIC cxx_std_20)
 
 if(WIN32)
     target_link_libraries(EngineCore PUBLIC ws2_32)
+endif()
+
+# ---------------------------------------------------------------------------
+# EngineRender — 창과 렌더 백엔드.
+#
+# EngineCore와 별도 타깃으로 두는 이유: GameServer가 DX11을 링크조차 하지 않게 하기 위함.
+# dedicated server는 창도 GPU도 없다. 나중에 분리하려면 의존이 얽힌 뒤라 비싸지므로
+# 처음부터 나눠 둔다. (docs/design/rendering-dx11.md §9, docs/design/roadmap.md E2)
+#
+# 방향은 한쪽뿐이다: EngineRender → EngineCore. 코어는 렌더를 모른다.
+# ---------------------------------------------------------------------------
+add_library(EngineRender STATIC)
+
+target_sources(EngineRender
+    PRIVATE
+        Render/Dx11/Dx11Renderer.cpp
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+        FILES
+            Platform/IWindow.hpp
+            Render/Dx11/Dx11Renderer.hpp
+            Render/IRenderer.hpp
+            Render/RenderContext.hpp
+            Render/RenderTypes.hpp
+)
+
+target_link_libraries(EngineRender PUBLIC EngineCore)
+target_compile_features(EngineRender PUBLIC cxx_std_20)
+
+if(WIN32)
+    # d3dcompiler는 R3(런타임 셰이더 컴파일)부터 실제로 쓰인다.
+    target_link_libraries(EngineRender PRIVATE d3d11 dxgi d3dcompiler)
 endif()

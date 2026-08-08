@@ -475,3 +475,5 @@ CMakeUserPresets.json
 
 # CMake build output
 out/
+# JetBrains IDE (Rider / CLion)
+.idea/
