@@ -168,7 +168,14 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -Rel
 
 ### 3. 프로토콜 — `NetworkManager`
 
-월드 리소스([NetworkManager.hpp](EngineCore/Network/NetworkManager.hpp))로, 연결 하나와 endpoint↔clientId 테이블, endpoint별 `ReliabilityChannel`을 소유한다. 패킷 타입([Packet.hpp](EngineCore/Network/Packet.hpp), `kProtocolVersion`): `Hello`, `TypeTable`, `WorldSnapshotRequest`, `WorldSnapshot`, `InputCommand`, `TickHash`, `ResyncRequest`, `Welcome`, `InputFrame`. 모든 타입에 static `Encode*`/`Decode*`가 있다(`NetUtils.hpp`의 `PacketWriter`/`PacketReader`로 네트워크 바이트 오더 직렬화. `Fixed64`는 `Raw()`로 나간다).
+월드 리소스([NetworkManager.hpp](EngineCore/Network/NetworkManager.hpp))로, 연결 하나와 endpoint↔clientId 테이블, endpoint별 `ReliabilityChannel`을 소유한다. 패킷 타입([Packet.hpp](EngineCore/Network/Packet.hpp)): `Hello`, `TypeTable`, `WorldSnapshotRequest`, `WorldSnapshot`, `InputCommand`, `TickHash`, `ResyncRequest`, `Welcome`, `InputFrame`. 모든 타입에 static `Encode*`/`Decode*`가 있다(`NetUtils.hpp`의 `PacketWriter`/`PacketReader`로 네트워크 바이트 오더 직렬화. `Fixed64`는 `Raw()`로 나간다).
+
+> ⚠️ **와이어 버전에 관한 정확한 사실** (예전 문서에 틀린 내용이 있었다):
+> - 매직 넘버 `EFSY`는 **코드에 존재하지 않는다.** 설계 초안에만 있던 것이다.
+> - `Packet.hpp`의 `kProtocolVersion`은 **선언만 되어 있고 아무도 읽지 않는다.** 올려도 아무 효과가 없다 — 구버전 상대는 여전히 조용히 깨진 데이터를 읽는다.
+> - 실제로 와이어에 실리고 **검사까지 되는** 버전은 전송 계층의 `kReliabilityVersion`뿐이다(`ReliabilityChannel.cpp`. 데이터그램 헤더에 쓰고, 불일치하면 거부).
+>
+> 앱 계층 버전 검사가 필요해지면 `Hello`/`Welcome` handshake에서 비교하는 게 자연스럽다. 그때 `EF_VERSION_*`와 [serialization.md](docs/design/serialization.md) §5의 스키마 해시를 함께 실으면 된다.
 
 서버 쪽 클라이언트별 상태는 `NetworkClientState`다: `endpoint`, 조종 엔티티, 타입테이블·스냅샷 플래그, **`inputByTick` 슬롯 맵**, 마지막 확정 입력. `ClientIdForEndpoint`가 스푸핑 방지 조회다 — 페이로드에 실린 clientId가 아니라 endpoint로 인가한다.
 
