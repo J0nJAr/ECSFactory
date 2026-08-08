@@ -86,12 +86,14 @@ add_library(EngineRender STATIC)
 
 target_sources(EngineRender
     PRIVATE
+        Platform/Win32Window.cpp
         Render/Dx11/Dx11Renderer.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
         FILES
             Platform/IWindow.hpp
+            Platform/Win32Window.hpp
             Render/Dx11/Dx11Renderer.hpp
             Render/IRenderer.hpp
             Render/RenderContext.hpp
