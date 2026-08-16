@@ -1,4 +1,7 @@
-cmake_minimum_required(VERSION 3.20)
+# 3.23 이상이 필요하다. target_sources 의 FILE_SET HEADERS 가 3.23에서 들어왔고
+# EngineCore/CMakeLists.txt 가 그걸 쓴다. 3.20으로 적어두면 3.20~3.22 사용자가
+# "왜 안 되는지 모르는" 에러를 만난다 — 선언한 최소치는 실제 최소치여야 한다.
+cmake_minimum_required(VERSION 3.23)
 
 # 버전 규칙 (docs/design/roadmap.md §2.6):
 #   - 0.x  : 첫 결승선(공장 게임 최소 루프) 이전

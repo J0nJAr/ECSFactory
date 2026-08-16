@@ -178,7 +178,8 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -Rel
 
 > ⚠️ **와이어 버전에 관한 정확한 사실** (예전 문서에 틀린 내용이 있었다):
 > - 매직 넘버 `EFSY`는 **코드에 존재하지 않는다.** 설계 초안에만 있던 것이다.
-> - `Packet.hpp`의 `kProtocolVersion`은 **선언만 되어 있고 아무도 읽지 않는다.** 올려도 아무 효과가 없다 — 구버전 상대는 여전히 조용히 깨진 데이터를 읽는다.
+> - `Packet.hpp`의 `kProtocolVersion`은 **지금은** 선언만 되어 있고 아무도 읽지 않는다. 올려도 아무 효과가 없다 — 구버전 상대는 여전히 조용히 깨진 데이터를 읽는다.
+>   (역사적 주의: 처음부터 죽은 상수는 아니었다. 신뢰성 계층 도입 전에는 `NetworkManager`가 프레임 첫 바이트에 이 값을 쓰고 수신 시 검사했다. 07에서 프레임 포맷이 신뢰성 데이터그램으로 바뀌면서 그 경로가 사라졌다. 옛 커밋을 읽을 때 헷갈리지 말 것.)
 > - 실제로 와이어에 실리고 **검사까지 되는** 버전은 전송 계층의 `kReliabilityVersion`뿐이다(`ReliabilityChannel.cpp`. 데이터그램 헤더에 쓰고, 불일치하면 거부).
 >
 > 앱 계층 버전 검사가 필요해지면 `Hello`/`Welcome` handshake에서 비교하는 게 자연스럽다. 그때 `EF_VERSION_*`와 [serialization.md](docs/design/serialization.md) §5의 스키마 해시를 함께 실으면 된다.

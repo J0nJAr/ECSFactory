@@ -18,24 +18,34 @@
 05의 `UDPConnection`은 point-to-point였다. 소켓 하나에 peer 주소 하나(`m_peerAddress`)만 들고 있었다.
 
 ```cpp
-// 05 시점의 UDPConnection (요지)
+// 05 시점의 UDPConnection (실제 코드)
 std::optional<std::vector<uint8_t>> Receive() {
-    recvfrom(m_socket, ..., &fromAddress, ...);
-    m_peerAddress = fromAddress;   // ← 마지막으로 받은 sender로 덮어씀
+    sockaddr_in fromAddress;
+    recvfrom(m_socket, ..., &fromAddress, &fromAddressSize);
+    // fromAddress를 받아 놓고 아무 데도 쓰지 않는다. 여기서 그냥 버려진다.
     return buffer;
 }
+
 bool Send(std::span<const uint8_t> message) {
-    sendto(m_socket, ..., &m_peerAddress, ...);   // ← 그 하나에게만 보냄
+    if (m_socket == INVALID_SOCKET || !m_isConnected) return false;  // ← Connect() 한 적 있어야만
+    sendto(m_socket, ..., &m_peerAddress, ...);   // ← Connect()가 정한 그 하나에게만
 }
 ```
 
-클라이언트가 하나일 땐 문제가 없다. 그런데 **두 명이 붙으면** 이렇게 깨진다.
+`m_peerAddress`와 `m_isConnected`를 세팅하는 곳은 **`Connect()` 하나뿐**이다. 그래서 문제는 "여러 클라를 구분 못 한다"보다 한 단계 더 심각했다.
 
 ```text
-클라A가 Hello  → 서버.Receive() → m_peerAddress = A
-클라B가 Hello  → 서버.Receive() → m_peerAddress = B   (A 덮어씀)
-서버가 A에게 Welcome을 보내려 함 → sendto(m_peerAddress=B) → B에게 감  ✗
+클라A가 Hello  → 서버.Receive() → fromAddress 를 읽고 버림. A가 누군지 남지 않는다
+클라B가 Hello  → 서버.Receive() → 마찬가지
+
+서버는 Bind()만 했지 Connect()를 부른 적이 없다
+  → m_isConnected == false
+  → Send()가 첫 줄에서 false 를 반환하고 끝난다  ✗
+
+즉 서버는 "엉뚱한 클라에게 보내는" 게 아니라 애초에 아무에게도 못 보냈다.
 ```
+
+이건 나중에 코드를 다시 열어 보고서야 알았다. 05를 쓸 때는 "peer 주소 하나만 기억하니 두 명이 붙으면 덮어쓰겠구나" 정도로 이해하고 있었는데, 실제로는 그 덮어쓰기조차 일어나지 않았다. 05의 테스트 10종이 `UDPConnection`을 한 번도 쓰지 않고 전부 `MemoryConnection::CreatePair()`로 돌아간 것이 그 증거다 — **UDP 경로는 테스트가 없어서 안 도는 줄도 몰랐다.**
 
 게다가 05의 `NetworkManager`는 **연결을 하나만** 들고 있었고, `TryReceivePacket()`은 *"이 패킷을 누가 보냈는가"* 를 알려주지 않았다. 그래서 서버가 `Hello`를 받아도 그 클라의 주소와 `clientId`를 묶을 방법 자체가 없었다.
 
