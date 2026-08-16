@@ -130,7 +130,7 @@ UI를 렌더링 중간에 끼우는 이유: **UI는 카메라가 필요 없어�
 작은 마일스톤 하나를 끝낼 때마다 다음을 한다.
 
 1. **빌드·테스트 green 확인.** 각 마일스톤은 독립 커밋으로 둔다.
-2. **`explain-diff-html` 스킬로 그 변경의 설명 문서를 만든다.** 배경·직관·코드 워크스루·퀴즈 5문항이 나온다. 출력은 `C:\Users\macham\Documents\explanations\YYYY-MM-DD-explanation-<slug>.html`.
+2. **`explain-diff-html` 스킬로 그 변경의 설명 문서를 만든다.** 배경·직관·코드 워크스루·퀴즈 5문항이 나온다. 출력은 `~/Documents/explanations/YYYY-MM-DD-explanation-<slug>.html`(저장소 밖).
 3. 설계 판단이 바뀌었으면 해당 설계 문서(`docs/design/*.md`)를 고친다. 근거를 채팅에만 남기지 않는다.
 
 이건 학습용 프로젝트라서 넣은 절차다. 마일스톤이 작을수록(하루치 정도) 설명 문서가 소화 가능한 크기로 나온다 — 그래서 마일스톤을 크게 묶지 말 것.

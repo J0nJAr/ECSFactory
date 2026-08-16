@@ -28,7 +28,7 @@ ECSFactory는 **서버 권위형 멀티플레이 + 결정론적 시뮬레이션*
 마일스톤은 **작게**(하루치 정도) 자르고, 하나를 끝낼 때마다:
 
 1. **빌드·테스트 green 확인.** 마일스톤마다 독립 커밋.
-2. **`explain-diff-html` 스킬로 그 변경의 설명 문서를 만든다** — 배경·직관·코드 워크스루·퀴즈가 나온다. 출력은 `C:\Users\macham\Documents\explanations\`에 날짜 접두로 쌓인다. 학습용 프로젝트이므로 이게 결과물의 일부다.
+2. **`explain-diff-html` 스킬로 그 변경의 설명 문서를 만든다** — 배경·직관·코드 워크스루·퀴즈가 나온다. 출력은 홈 아래 `~/Documents/explanations/`(저장소 밖)에 날짜 접두로 쌓인다. 학습용 프로젝트이므로 이게 결과물의 일부다.
 3. 설계 판단이 바뀌었으면 해당 `docs/design/*.md`를 고친다. 근거를 대화에만 남기지 않는다.
 
 마일스톤을 크게 묶으면 설명 문서가 소화 불가능한 크기가 된다. 그래서 크게 묶지 않는다.
@@ -240,10 +240,12 @@ tick당 흐름:
 
 - 실제 키보드·마우스 입력(`Input`, [Base/InputManager.hpp](EngineCore/Base/InputManager.hpp))이 `InputCommand`로 변환되지 않는다. 테스트는 `NetworkSyncSystem::QueueLocalInput`을 직접 호출한다.
 - 클라이언트 예측·롤백 없음 — 클라는 입력 지연 + RTT만큼 뒤처진다.
-- **결정론 스폰/디스폰** ⚠️ — `ApplySnapshot`이 새 `Registry`를 만들면서 `EntityManager`의 version / free list / next index를 복원하지 않는다. 그래서 스냅샷 이후 서버와 클라의 엔티티 index 할당이 갈라지고, `ComputeHash()`가 dense entity index를 섞으므로 곧바로 해시 불일치가 된다. 지금은 시뮬 도중 스폰을 하지 않아서 드러나지 않을 뿐이다. 건설·스폰이 필요한 작업에 들어가기 전에 반드시 해결할 것 — [roadmap.md §6](docs/design/roadmap.md) 참조.
+- **결정론 스폰/디스폰** 🟡 절반 완료 — 스냅샷이 `EntityManager` 상태(version / free list / next index)를 나르지 않던 문제는 해결됐다(N1). 남은 것은 **스폰·디스폰이 확정 입력 경로에서만 일어나게 하는 것**(N2)이다. 지금은 `NetworkSyncSystem`의 `Hello` 처리가 확정 입력 밖에서 `CreateEntity()`를 부른다. 건설·스폰이 필요한 작업 전에 정리할 것 — [roadmap.md §6](docs/design/roadmap.md).
+- ⚠️ **`World::ComputeHash()`가 풀을 프로세스 로컬 타입 인덱스 순서로 순회한다.** 타입을 처음 쓰는 순서가 다른 두 프로세스는 월드 내용이 같아도 다른 해시를 낸다(위의 index vs hash 규칙을 해시 함수 자신이 밟고 있다). 지금은 클라·서버가 같은 순서로 등록해서 드러나지 않을 뿐이다.
+- ⚠️ **`EntityManager::IsAlive`가 free list를 보지 않는다.** version만 비교하므로 "파괴됐지만 아직 재사용되지 않은 index"로 만든 id를 살아 있다고 판정한다. `View`가 dense 풀에서만 id를 뽑아 현재는 안 물리지만, 임의 index로 id를 만드는 코드를 추가하면 물린다.
 - 렌더링 계층 전체 — `docs/design/rendering-dx11.md`에 설계만 있고 구현은 없다.
 - `SystemRegistry::SortSystems()`는 TODO. 시스템은 등록 순서대로 실행된다.
 
 ## 사용할 수 있는 스킬
 
-- `explain-diff-html` — 현재 diff / 브랜치 / PR을 배경·직관·코드 워크스루·퀴즈 5문항으로 설명하는 자체완결형 HTML을 만든다. 출력은 `C:\Users\macham\Documents\explanations\YYYY-MM-DD-explanation-<slug>.html`. 학습용 프로젝트이므로 큰 변경을 끝낸 뒤 이걸로 복습 자료를 만들면 좋다.
+- `explain-diff-html` — 현재 diff / 브랜치 / PR을 배경·직관·코드 워크스루·퀴즈 5문항으로 설명하는 자체완결형 HTML을 만든다. 출력은 `~/Documents/explanations/YYYY-MM-DD-explanation-<slug>.html`(저장소 밖). 학습용 프로젝트이므로 큰 변경을 끝낸 뒤 이걸로 복습 자료를 만들면 좋다.
