@@ -483,3 +483,6 @@ out/
 
 # Playwright MCP 임시 산출물
 .playwright-mcp/
+
+# 일회성 확인 작업 디렉터리
+.tmpchk/
