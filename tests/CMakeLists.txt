@@ -6,6 +6,7 @@ add_executable(EngineCoreTests
     NetworkTests.cpp
     RegistryViewTests.cpp
     SparseSetTests.cpp
+    TestHarness.hpp
     UITests.cpp
 )
 

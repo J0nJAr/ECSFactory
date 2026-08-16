@@ -41,6 +41,24 @@ namespace EF {
         std::vector<EntityIndex> freeIndices;
     };
 
+    // 엔티티 id의 발급·회수·생존 판정을 맡는다. 컴포넌트는 모른다.
+    //
+    // id는 index와 version으로 이루어진다. index를 재사용할 때 version을 올려서,
+    // 파괴된 엔티티를 가리키던 예전 id가 새 엔티티로 오인되지 않게 한다.
+    //
+    // 보장:
+    //  - 같은 상태에서 같은 횟수로 CreateEntity를 부르면 같은 id 열이 나온다.
+    //    free list는 LIFO(뒤에서 pop)다. 이 결정성이 lockstep의 전제다 — 서버와 클라가
+    //    같은 확정 입력으로 스폰하면 각자 계산해도 같은 EntityId가 나와야 한다.
+    //  - CreateSnapshot / RestoreFrom으로 이 상태 전체가 복제된다.
+    //
+    // 이 타입이 하지 않는 일:
+    //  - 컴포넌트를 지우지 않는다. 파괴 시 풀 정리는 Registry의 몫이다.
+    //
+    // ⚠️ 알려진 결함: IsAlive는 version만 비교하고 free list를 보지 않는다. 그래서
+    //    "파괴됐지만 아직 재사용되지 않은 index"로 ResolveEntityId가 만든 id에 대해
+    //    true를 준다. View는 dense 풀에서만 id를 뽑으므로 현재 경로에서는 드러나지 않지만,
+    //    임의 index로 id를 만들어 쓰는 코드를 추가하면 물린다.
     class EntityManager {
     public:
         EntityId CreateEntity();

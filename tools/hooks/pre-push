@@ -6,7 +6,7 @@
 # 여기서는 증분 빌드라 보통 몇 초다. 깨진 커밋을 원격에 올리지 않는 게 목적이고,
 # CI를 대체하려는 게 아니다(CI는 깨끗한 환경 + Release까지 본다).
 #
-# 설치: pwsh -File tools/Install-GitHooks.ps1
+# 설치: powershell -File tools/Install-GitHooks.ps1
 # 건너뛰기: git push --no-verify   (급할 때만. 습관이 되면 훅이 무의미해진다)
 
 set -euo pipefail

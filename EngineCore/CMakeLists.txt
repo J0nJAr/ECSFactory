@@ -38,6 +38,7 @@ target_sources(EngineCore
             ECS/SystemRegistry.hpp
             ECS/TypeInfo.hpp
             ECS/View.hpp
+            ECS/World.hpp
             Math/Fixed64.hpp
             Math/Internal.hpp
             Math/Math.hpp

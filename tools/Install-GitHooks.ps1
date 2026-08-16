@@ -12,7 +12,7 @@
     다시 실행해야 한다는 점을 감수한다.
 
 .EXAMPLE
-    pwsh -File tools/Install-GitHooks.ps1
+    powershell -File tools/Install-GitHooks.ps1
 #>
 
 $ErrorActionPreference = 'Stop'

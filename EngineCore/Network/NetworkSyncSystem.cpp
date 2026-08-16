@@ -269,6 +269,16 @@ namespace EF {
                 m_hasServerTickEstimate = true;
                 if (m_hasSnapshot) {
                     m_pendingTickHashes[tickHash.tick] = tickHash.worldHash;
+
+                    // 상한을 건다. InputFrame에 구멍이 나서 클라 시뮬레이션이 멈추면
+                    // 미래 tick의 TickHash가 계속 쌓이기만 한다.
+                    //
+                    // 넘칠 때 "가장 새 것"을 버리는 이유: 검증은 오래된 tick부터 순서대로
+                    // 소비된다. 구멍이 재전송으로 메워지면 클라는 버퍼된 프레임을 따라
+                    // 앞에서부터 따라잡으므로, 가까운 미래의 해시가 먼 미래의 것보다 쓸모 있다.
+                    while (m_pendingTickHashes.size() > kLocalHashHistoryTicks) {
+                        m_pendingTickHashes.erase(std::prev(m_pendingTickHashes.end()));
+                    }
                 }
             }
             break;

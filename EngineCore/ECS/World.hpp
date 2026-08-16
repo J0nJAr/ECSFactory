@@ -49,6 +49,27 @@ namespace EF {
         std::vector<ComponentSnapshot> components;
     };
 
+    // 시뮬레이션 한 덩어리. Registry(엔티티·컴포넌트) + SystemRegistry(시스템) +
+    // 타입 키 리소스 맵(월드별 싱글턴, 예: NetworkManager)의 조합이다.
+    //
+    // 한 GameEngine이 World를 여러 개 가질 수 있다. 호스트·싱글플레이는 같은 엔진 안에
+    // ServerSimulation 월드와 ClientPresentation 월드를 함께 두고 인메모리로 연결한다.
+    //
+    // 보장:
+    //  - CreateSnapshot / ApplySnapshot은 trivially-copyable 컴포넌트만 다룬다.
+    //    ApplySnapshot은 엔티티 할당 상태를 먼저 복원한 뒤 컴포넌트를 채우고,
+    //    타입 모양이나 엔티티 index가 어긋나면 아무것도 바꾸지 않고 거부한다.
+    //  - ComputeHash는 trivial 풀의 내용으로 결정론 체크섬을 만든다.
+    //
+    // 이 타입이 하지 않는 일:
+    //  - 네트워크를 모른다. 스냅샷을 만들고 적용할 뿐, 보내는 건 NetworkSyncSystem이다.
+    //  - 시스템 실행 순서를 정하지 않는다(SystemRegistry::SortSystems는 아직 TODO라
+    //    등록 순서대로 실행된다).
+    //
+    // ⚠️ 알려진 결함: ComputeHash가 풀을 **프로세스 로컬 타입 인덱스 순서**로 순회한다.
+    //    타입을 처음 쓰는 순서가 다른 두 프로세스는 월드 내용이 같아도 다른 해시를 낸다.
+    //    지금은 클라·서버가 같은 순서로 등록해서 드러나지 않을 뿐이다.
+    //    (TypeInfo.index는 프로세스 로컬이고 hash만 안정적이다 — CLAUDE.md 참조.)
     class World {
     private:
         Registry m_registry;
