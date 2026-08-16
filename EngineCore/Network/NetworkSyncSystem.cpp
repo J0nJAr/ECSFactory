@@ -6,6 +6,11 @@ namespace EF {
     namespace {
         constexpr uint64_t kInputDelayTicks = 2;
         constexpr uint32_t kInputRedundancySends = 3;
+
+        // tick별 로컬 해시를 몇 개까지 들고 있을지.
+        // 50Hz 기준 128 tick ≈ 2.5초로, 입력 지연(2 tick) + 왕복 지연 + 재전송(4 tick 간격)을
+        // 다 합쳐도 한참 남는 창이다. 이보다 오래 밀린 TickHash는 비교해봐야 의미가 없다.
+        constexpr std::size_t kLocalHashHistoryTicks = 128;
     }
 
     NetworkSyncSystem::NetworkSyncSystem(NetworkSyncMode mode)
@@ -57,7 +62,7 @@ namespace EF {
         }
 
         ApplyBufferedInputFrames(world, network);
-        VerifyPendingTickHashes(world, network);
+        VerifyPendingTickHashes(network);
     }
 
     void NetworkSyncSystem::UpdateServer(World& world, NetworkManager& network, uint64_t tick) {
@@ -147,10 +152,25 @@ namespace EF {
             ApplyConfirmedInputs(world, frameIt->second);
             m_clientSimTick = nextTick;
             m_frameBuffer.erase(frameIt);
+
+            // 이 tick을 시뮬레이션한 "그 순간"의 해시를 남긴다.
+            // 루프가 여러 프레임을 몰아 적용할 수 있으므로, 나중에 현재 해시를 다시
+            // 계산하면 어느 tick의 상태인지 알 수 없게 된다.
+            RecordLocalHash(world, m_clientSimTick);
         }
     }
 
-    void NetworkSyncSystem::VerifyPendingTickHashes(World& world, NetworkManager& network) {
+    void NetworkSyncSystem::RecordLocalHash(World& world, uint64_t tick) {
+        m_localHashByTick[tick] = world.ComputeHash();
+
+        // 무한히 쌓이지 않게 자른다. TickHash는 서버가 매 tick 보내고 클라는 입력 지연 +
+        // RTT만큼 뒤처지므로, 이 창보다 오래 밀린 해시는 어차피 비교 가치가 없다.
+        while (m_localHashByTick.size() > kLocalHashHistoryTicks) {
+            m_localHashByTick.erase(m_localHashByTick.begin());
+        }
+    }
+
+    void NetworkSyncSystem::VerifyPendingTickHashes(NetworkManager& network) {
         if (!m_hasSnapshot) {
             return;
         }
@@ -158,11 +178,24 @@ namespace EF {
         for (auto it = m_pendingTickHashes.begin(); it != m_pendingTickHashes.end();) {
             const uint64_t tick = it->first;
             if (tick > m_clientSimTick) {
+                // 아직 그 tick을 시뮬레이션하지 않았다. 따라잡을 때까지 보류한다.
                 break;
             }
 
             const uint64_t remoteHash = it->second;
-            const uint64_t localHash = world.ComputeHash();
+
+            // ⚠️ 반드시 "그 tick의" 로컬 해시와 비교한다. world.ComputeHash()를 여기서
+            //    부르면 현재(= clientSimTick) 상태가 나오는데, 프레임이 몰아서 적용되면
+            //    tick != clientSimTick 이라 정상 상태를 불일치로 판정한다.
+            auto localIt = m_localHashByTick.find(tick);
+            if (localIt == m_localHashByTick.end()) {
+                // 기록이 잘려 나갔거나 애초에 시뮬레이션한 적 없는 tick이다.
+                // 판정할 근거가 없으므로 조용히 버린다 — 추측으로 디싱크를 선언하지 않는다.
+                it = m_pendingTickHashes.erase(it);
+                continue;
+            }
+
+            const uint64_t localHash = localIt->second;
             if (localHash != remoteHash) {
                 m_hasHashMismatch = true;
                 network.SendResyncRequest(tick, localHash, remoteHash);
@@ -171,10 +204,9 @@ namespace EF {
         }
     }
 
-    /// @brief 클라이언트 모드에서 수신한 패킷을 처리한다.
-    /// @param world
-    /// @param network
-    /// @param packet
+    // 클라이언트 모드에서 수신한 패킷 하나를 처리한다.
+    // 여기서는 상태만 갱신하고 시뮬레이션은 돌리지 않는다 —
+    // 프레임 적용은 ApplyBufferedInputFrames가 순서를 통제해서 한다.
     void NetworkSyncSystem::HandlePacketOnClient(World& world, NetworkManager& network, const Network::NetworkPacket& packet) {
         switch (packet.type) {
         case Network::PacketType::Welcome: {
@@ -208,6 +240,15 @@ namespace EF {
                 m_serverTickEstimate = snapshot.tick;
                 m_hasServerTickEstimate = true;
                 m_frameBuffer.erase(m_frameBuffer.begin(), m_frameBuffer.upper_bound(m_clientSimTick));
+
+                // 스냅샷은 월드를 통째로 갈아끼운다. 이전 해시 기록은 지금 월드와 무관하므로
+                // 버리고, 스냅샷 tick의 해시를 새 기준선으로 남긴다.
+                m_localHashByTick.clear();
+                RecordLocalHash(world, m_clientSimTick);
+
+                // 스냅샷보다 오래된 TickHash는 판정 근거가 사라졌다.
+                m_pendingTickHashes.erase(m_pendingTickHashes.begin(),
+                                          m_pendingTickHashes.lower_bound(m_clientSimTick));
             }
             break;
         }
@@ -238,12 +279,7 @@ namespace EF {
         }
     }
 
-    /// @brief 서버 모드에서 수신한 패킷을 처리한다.
-    /// @param world
-    /// @param network
-    /// @param from 보낸 사람 endpoint. 응답 라우팅과 clientId 인가에 쓴다.
-    /// @param packet
-    /// @param tick
+    // 서버 모드에서 수신한 패킷을 처리한다.
     void NetworkSyncSystem::HandlePacketOnServer(World& world, NetworkManager& network, const Network::Endpoint& from, const Network::NetworkPacket& packet, uint64_t tick) {
         switch (packet.type) {
         case Network::PacketType::Hello: {

@@ -12,6 +12,19 @@ namespace EF {
         using Writer = Network::PacketWriter;
         using Reader = Network::PacketReader;
 
+        // 와이어에서 읽은 개수로 곧장 reserve 하면 안 된다.
+        //
+        // 조작된(혹은 손상된) 4바이트 길이 접두 하나로 수 GB 예약을 유도할 수 있고,
+        // 그 자리에서 bad_alloc으로 프로세스가 죽는다. 실제 데이터가 뒤따르는지는
+        // 루프가 읽어 보기 전까지 알 수 없으므로, 예약만 남은 페이로드가 감당할 수 있는
+        // 최대치로 자른다. 개수가 진짜라면 push_back이 알아서 더 늘린다.
+        //
+        // 어떤 항목도 4바이트(u32 하나)보다 작을 수 없으므로 Remaining()/4가 안전한 상한이다.
+        // 항목 크기를 하드코딩하지 않는 이유: 와이어 포맷이 바뀌어도 이 상한은 계속 유효하다.
+        [[nodiscard]] std::size_t SafeReserveCount(uint32_t count, const Reader& reader) {
+            return std::min<std::size_t>(count, reader.Remaining() / 4);
+        }
+
         void WriteType(Writer& writer, const ComponentTypeDescriptor& type) {
             writer.U64(type.hash);
             writer.U64(static_cast<uint64_t>(type.size));
@@ -103,7 +116,8 @@ namespace EF {
 
         NetworkClientState& state = GetOrCreateClient(command.clientId);
 
-        // Deduplicate by client/tick slot and reject ticks already confirmed by the server.
+        // client/tick 슬롯으로 중복을 거르고, 서버가 이미 확정한 tick은 거부한다.
+        // (확정된 과거를 뒤늦게 바꾸면 서버와 클라의 시뮬레이션이 갈라진다.)
         if (command.tick <= state.lastConfirmedTick) {
             return false;
         }
@@ -356,7 +370,7 @@ namespace EF {
         }
 
         outTypes.clear();
-        outTypes.reserve(count);
+        outTypes.reserve(SafeReserveCount(count, reader));
         for (uint32_t i = 0; i < count; ++i) {
             ComponentTypeDescriptor type;
             if (!ReadType(reader, type)) {
@@ -457,7 +471,7 @@ namespace EF {
         }
 
         outSnapshot.typeTable.clear();
-        outSnapshot.typeTable.reserve(typeCount);
+        outSnapshot.typeTable.reserve(SafeReserveCount(typeCount, reader));
         for (uint32_t i = 0; i < typeCount; ++i) {
             ComponentTypeDescriptor type;
             if (!ReadType(reader, type)) {
@@ -471,7 +485,7 @@ namespace EF {
         }
 
         outSnapshot.components.clear();
-        outSnapshot.components.reserve(componentCount);
+        outSnapshot.components.reserve(SafeReserveCount(componentCount, reader));
         for (uint32_t i = 0; i < componentCount; ++i) {
             ComponentSnapshot component;
             uint32_t entityCount = 0;
@@ -480,7 +494,7 @@ namespace EF {
                 return false;
             }
 
-            component.entities.reserve(entityCount);
+            component.entities.reserve(SafeReserveCount(entityCount, reader));
             for (uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex) {
                 uint32_t entity = 0;
                 if (!reader.U32(entity)) {
@@ -527,7 +541,7 @@ namespace EF {
         }
 
         outFrame.inputs.clear();
-        outFrame.inputs.reserve(count);
+        outFrame.inputs.reserve(SafeReserveCount(count, reader));
         for (uint32_t i = 0; i < count; ++i) {
             InputCommand command;
             if (!ReadInputCommand(reader, command)) {

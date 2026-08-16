@@ -756,13 +756,24 @@ TEST_CASE(Network, SnapshotRejectsInconsistentEntityState) {
     EF::World serverWorld = CreateWorldWithHoles(entities);
     const EF::WorldSnapshot valid = serverWorld.CreateSnapshot(1);
 
+    // 변형한 스냅샷을 실제 와이어 왕복(Encode → Decode)까지 태운 뒤 적용한다.
+    // 구조체를 곧장 ApplySnapshot에 넘기면 인코더나 디코더가 필드를 통째로 빠뜨려도
+    // 이 테스트가 통과해 버린다 — 검증하려는 대상이 와이어를 건넌 스냅샷이므로
+    // 왕복을 거치는 것이 맞다.
     auto applyMutated = [&valid](auto&& mutate) {
         EF::WorldSnapshot snapshot = valid;
         mutate(snapshot);
 
+        const std::vector<uint8_t> payload = EF::NetworkManager::EncodeWorldSnapshot(snapshot);
+        EF::WorldSnapshot decoded;
+        if (!EF::NetworkManager::DecodeWorldSnapshot(payload, decoded)) {
+            // 디코더가 먼저 걸러낸 것도 "거부"다.
+            return false;
+        }
+
         EF::World clientWorld;
         clientWorld.RegisterSnapshotComponent<EF::Transform>();
-        return clientWorld.ApplySnapshot(snapshot);
+        return clientWorld.ApplySnapshot(decoded);
     };
 
     // 온전한 스냅샷은 통과한다(아래 거부들이 다른 이유로 실패한 게 아님을 보장).
@@ -787,6 +798,14 @@ TEST_CASE(Network, SnapshotRejectsInconsistentEntityState) {
     // 복원된 free list를 갉아먹어서 다음 할당이 서버와 갈라진다.
     EXPECT_FALSE(applyMutated([](EF::WorldSnapshot& snapshot) {
         snapshot.components[0].entities[0] = snapshot.entities.freeIndices.front();
+    }));
+
+    // 클라가 등록하지 않은 타입에 실린 잘못된 index도 거부해야 한다.
+    // 미등록 타입을 먼저 건너뛰면 이 검사가 통째로 빠져서, 자기모순인 스냅샷이
+    // 통과한다. 여기서는 타입 해시만 바꿔 "이 클라가 모르는 타입"으로 만든다.
+    EXPECT_FALSE(applyMutated([](EF::WorldSnapshot& snapshot) {
+        snapshot.components[0].entities[0] = snapshot.entities.freeIndices.front();
+        snapshot.components[0].type.hash ^= 0xA5A5A5A5A5A5A5A5ull;
     }));
 }
 
@@ -1188,4 +1207,53 @@ TEST_CASE(Network, LargeSnapshotReassemblesOverLossyLink) {
     // 큰 스냅샷이 여러 조각으로 나뉘고 손실을 넘어 재조립되어야 한다.
     EXPECT_TRUE(clientSync.HasSnapshot());
     EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+}
+
+// 회귀 테스트: 여러 InputFrame이 한 FixedUpdate에 몰아서 적용될 때
+// 과거 tick의 원격 해시를 "현재" 월드 해시와 비교하면 안 된다.
+//
+// 재현 조건: 클라가 잠시 펌프하지 못하는 사이 서버가 여러 tick을 진행하면,
+// 다음 펌프에서 프레임 여러 개가 한꺼번에 적용되어 clientSimTick이 점프한다.
+// 그 사이 도착해 있던 tick T의 TickHash를 tick T+n 상태와 비교하면
+// 정상인데도 불일치로 판정되어 resync 폭풍이 난다.
+TEST_CASE(Network, BatchedInputFramesDoNotCauseFalseHashMismatch) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World serverWorld = CreateLockstepPlayerWorld(1);
+    serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+    clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+
+    // 핸드셰이크
+    uint64_t tick = 1;
+    for (; tick <= 3; ++tick) {
+        clientWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+    EXPECT_TRUE(clientSync.HasSnapshot());
+
+    // 월드가 tick마다 실제로 바뀌도록 이동 입력을 넣는다.
+    // (상태가 안 변하면 해시가 같아 이 버그가 드러나지 않는다.)
+    clientSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
+    clientWorld.FixedUpdate(dt, tick);
+    serverWorld.FixedUpdate(dt, tick);
+    ++tick;
+
+    // 클라를 멈춘 채 서버만 여러 tick 진행 → 프레임과 TickHash가 쌓인다.
+    const uint64_t serverOnlyTicks = 5;
+    for (uint64_t i = 0; i < serverOnlyTicks; ++i, ++tick) {
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    // 이제 클라가 한 번에 따라잡는다. 여기서 허위 불일치가 나면 안 된다.
+    clientWorld.FixedUpdate(dt, tick);
+
+    EXPECT_FALSE(clientSync.HasHashMismatch());
 }

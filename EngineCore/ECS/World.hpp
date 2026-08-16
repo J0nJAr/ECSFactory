@@ -242,18 +242,24 @@ namespace EF {
             }
 
             for (const ComponentSnapshot& componentSnapshot : snapshot.components) {
-                auto applierIt = m_snapshotAppliers.find(componentSnapshot.type.hash);
-                if (applierIt == m_snapshotAppliers.end()) {
-                    continue;
-                }
-
                 // 죽었거나 존재하지 않는 index에 컴포넌트가 붙은 스냅샷은 자기모순이다.
-                // 그냥 넘기면 EnsureEntityExists가 복원된 EntityManager를 망가뜨리므로
-                // 여기서 거른다(타입 불일치와 같은 취급 — 적용 자체를 거부).
+                //
+                // ⚠️ 이 검사는 "우리가 아는 타입인가"보다 **먼저** 와야 한다.
+                //    미등록 타입을 먼저 건너뛰면 그 타입에 실린 잘못된 index가 검사되지 않고,
+                //    자기모순인 스냅샷을 정상으로 받아들이게 된다. 적용되지 않는 타입이라
+                //    당장 월드가 깨지지는 않지만, 거부해야 할 입력을 통과시키는 것 자체가 결함이다.
+                //    (등록 여부는 클라마다 다르므로, 같은 스냅샷의 수용/거부 판정이
+                //     peer마다 갈리는 것도 곤란하다.)
                 for (EntityIndex entityIndex : componentSnapshot.entities) {
                     if (static_cast<std::size_t>(entityIndex) >= isAlive.size() || !isAlive[entityIndex]) {
                         return false;
                     }
+                }
+
+                auto applierIt = m_snapshotAppliers.find(componentSnapshot.type.hash);
+                if (applierIt == m_snapshotAppliers.end()) {
+                    // 이 클라가 등록하지 않은 타입은 적용하지 않는다(거부가 아니라 무시).
+                    continue;
                 }
 
                 if (!applierIt->second(newRegistry, componentSnapshot)) {

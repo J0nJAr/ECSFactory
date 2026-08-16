@@ -57,9 +57,20 @@
 - 중첩된 부모-자식-손자에서 위치가 누적되어 맞는다.
 - float 비교에 허용오차를 쓴다.
 
+### 교차검증 지적 반영분
+
+- `TickHash` 비교는 **그 tick을 시뮬레이션한 순간의** 로컬 해시와 이루어진다. 여러 `InputFrame`이 한 `FixedUpdate`에 몰아서 적용되어 `clientSimTick`이 점프해도 허위 불일치가 나지 않는다.
+- 판정할 로컬 해시 기록이 없는 tick은 조용히 버린다. 근거 없이 디싱크를 선언하지 않는다.
+- tick별 해시 기록이 무한히 쌓이지 않는다(상한이 있다).
+- 스냅샷을 적용하면 이전 tick 해시 기록과 그보다 오래된 대기 `TickHash`가 정리된다.
+- 와이어에서 읽은 개수로 컨테이너를 곧장 `reserve` 하지 않는다. 남은 페이로드 크기로 상한이 걸려 있어, 조작된 길이 접두로 거대한 할당을 유도할 수 없다. 이 규칙이 스냅샷·타입테이블·InputFrame 디코더에 일관되게 적용된다.
+- 스냅샷의 엔티티 index 검증이 **컴포넌트 타입 등록 여부를 확인하기 전에** 일어난다. 클라이언트가 등록하지 않은 타입에 실린 잘못된 index도 거부된다.
+- 자기모순 스냅샷 거부 테스트가 `EncodeWorldSnapshot`/`DecodeWorldSnapshot` 왕복을 실제로 통과한다.
+- `NetworkManager`와 `NetworkSyncSystem`에 책임·보장·비책임을 담은 클래스 헤더 주석이 있다.
+
 ### CI / 빌드
 
 - `cmake --preset default` → `cmake --build --preset default` → `ctest --preset default`가 전부 성공하고, 테스트 실패가 0이다.
 - 새로 추가된 `.cpp`/`.hpp`가 전부 해당 `CMakeLists.txt`에 등록되어 있다(등록 없이 존재하는 소스 파일이 없다).
 - 새 `TEST_CASE`마다 `tests/CMakeLists.txt`에 대응하는 `add_test(...)` 줄이 있다.
-- 새로 추가한 파일에서 `-Wall -Wextra` 경고가 발생하지 않는다.
+- **clean 빌드 전체에서** `-Wall -Wextra` 경고가 0건이다(새 파일뿐 아니라 기존 파일 포함).

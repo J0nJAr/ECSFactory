@@ -477,3 +477,6 @@ CMakeUserPresets.json
 out/
 # JetBrains IDE (Rider / CLion)
 .idea/
+
+# Claude Code 로컬 작업 디렉터리 (워크트리, 임시 산출물, 로컬 설정)
+.claude/
