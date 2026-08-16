@@ -101,6 +101,7 @@ target_sources(EngineRender
         FILES
             Platform/IWindow.hpp
             Platform/Win32Window.hpp
+            Render/Dx11/ComPtr.hpp
             Render/Dx11/Dx11Renderer.hpp
             Render/IRenderer.hpp
             Render/RenderContext.hpp

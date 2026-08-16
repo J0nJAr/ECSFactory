@@ -36,6 +36,18 @@ namespace EF {
         void Submit(const RenderContext& context) override;
         void EndFrame() override;
 
+        // 현재 백버퍼를 PPM(P6) 파일로 덤프한다. 성공하면 true.
+        //
+        // IRenderer가 아니라 이 구현체에만 있다. 백엔드 추상화에 넣을 만큼
+        // 일반적인 기능이 아니고, 쓰는 쪽이 "DX11 결과를 눈으로 확인하려는" 도구이기 때문이다.
+        //
+        // 용도: 사람이 화면을 못 보는 환경에서 렌더 경로가 실제로 픽셀을 그렸는지 확인.
+        // 형식으로 PPM을 고른 이유는 헤더가 세 줄뿐이라 인코더가 필요 없어서다.
+        //
+        // ⚠️ EndFrame(Present) **전에** 불러야 한다. Present 후에는 백버퍼 내용이
+        //    보장되지 않는다(SWAP_EFFECT_DISCARD).
+        bool CaptureBackBuffer(const char* path);
+
     private:
         struct Impl;
         std::unique_ptr<Impl> m_impl;
