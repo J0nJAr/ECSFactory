@@ -486,3 +486,5 @@ out/
 
 # 일회성 확인 작업 디렉터리
 .tmpchk/
+.tmpbuild/
+tistory-login.png

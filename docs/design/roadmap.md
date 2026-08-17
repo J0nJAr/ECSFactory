@@ -4,6 +4,10 @@
 > 이 문서는 **무엇을 어떤 순서로 만들 것인가**를 정한다. 각 계층의 상세 설계는 옆 문서에 있다 —
 > [deterministic-input-lockstep.md](deterministic-input-lockstep.md)(입력·시뮬), [rendering-dx11.md](rendering-dx11.md)(렌더링), [network-sync-system.md](network-sync-system.md)(동기화).
 > 최종 목표: **결정론 엔진 위에 돌아가는 공장(팩토리) 게임.**
+>
+> `R2`·`N1`·`U8` 같은 기호가 각각 무엇이고 지금 어떤 상태인지는
+> [milestone-codes.md](../reference/milestone-codes.md)에 한 표로 모아 두었다.
+> **이 기호는 저장소 안에서만 쓴다** — 블로그 글에는 뜻이 드러나는 말로 푼다.
 
 ---
 

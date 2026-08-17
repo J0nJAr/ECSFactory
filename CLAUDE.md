@@ -106,6 +106,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -Rel
 `docs/`는 이 파일보다 자세하고, 코드와 함께 갱신되고 있다.
 
 - **[docs/design/roadmap.md](docs/design/roadmap.md) — 마일스톤 전체 계획.** 지금 무엇을 왜 그 순서로 만드는지가 여기 있다. "다음에 뭘 해야 하나"는 이 문서를 먼저 본다.
+- **[docs/reference/milestone-codes.md](docs/reference/milestone-codes.md) — 마일스톤 기호 사전.** `R2`·`N1`·`U8` 같은 기호가 무엇을 가리키고 지금 어떤 상태인지의 대조표. **이 기호는 저장소 안에서만 쓴다** — 블로그 글(`docs/blog/`)에는 뜻이 드러나는 말로 풀어 쓴다. 독자는 이 저장소를 볼 수 없다.
 - `docs/design/*.md` — 다음 에이전트·개발자를 대상으로 한 **핸드오프 스펙**: 근거, 불변식, 마일스톤 상태, 함정. 입력·동기화를 건드리기 전에 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)를, 렌더링을 시작하기 전에 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)를, UI를 건드리기 전에 [docs/design/ui-layer.md](docs/design/ui-layer.md)를 읽는다(뒤의 둘은 설계만 있고 코드는 아직 없다).
 - `docs/blog/*.md` — 각 계층을 만든 순서대로 쓴 서술형 기록(05 패킷 → 06 동기화 상태머신 → 07 신뢰성 UDP → 08 lockstep).
 
