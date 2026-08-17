@@ -488,3 +488,8 @@ out/
 .tmpchk/
 .tmpbuild/
 tistory-login.png
+
+# 스킨 확인용 임시 스크린샷
+chk-*.png
+skin-*.png
+lab*.png
