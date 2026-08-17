@@ -45,19 +45,58 @@
           <button class="hd-ico hd-lay-open" type="button" aria-label="레이아웃 전환">
             <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1"></rect><path d="M2.5 8h15M12 8v8.5"></path></svg>
           </button>
+          <!-- 32종을 한 줄로 늘어놓으면 고를 수가 없다. 성격별로 묶는다.
+               번호는 순번이 아니라 **디자인 고유 번호**다. 목업 카탈로그와 같은 번호라
+               "목업에서 본 24번"을 여기서 그대로 찾을 수 있다. 그래서 그룹 안에서
+               번호가 건너뛰는 것이 정상이다. -->
           <div class="hd-lay-menu" hidden>
-            <button type="button" data-layout="paper"><i>01</i>계측 도면</button>
-            <button type="button" data-layout="mag"><i>02</i>매거진</button>
-            <button type="button" data-layout="term"><i>03</i>터미널</button>
-            <button type="button" data-layout="note"><i>04</i>노트</button>
-            <button type="button" data-layout="grid"><i>05</i>카드 격자</button>
-            <button type="button" data-layout="news"><i>06</i>신문</button>
-            <button type="button" data-layout="min"><i>07</i>미니멀</button>
-            <button type="button" data-layout="card"><i>08</i>인덱스 카드</button>
-            <button type="button" data-layout="brut"><i>09</i>브루탈</button>
-            <button type="button" data-layout="time"><i>10</i>타임라인</button>
-            <button type="button" data-layout="doc"><i>11</i>도큐먼트</button>
-            <button type="button" data-layout="sticky"><i>12</i>포스트잇</button>
+            <div class="lay-sec">
+              <p class="lay-grp">읽기 중심</p>
+              <button type="button" data-layout="min"><i>07</i>미니멀</button>
+              <button type="button" data-layout="doc"><i>11</i>도큐먼트</button>
+              <button type="button" data-layout="serif"><i>18</i>세리프 롱폼</button>
+              <button type="button" data-layout="margin"><i>29</i>여백 부유</button>
+              <button type="button" data-layout="note"><i>04</i>노트</button>
+              <button type="button" data-layout="cornell"><i>22</i>코넬 노트</button>
+            </div>
+            <div class="lay-sec">
+              <p class="lay-grp">목록 훑기</p>
+              <button type="button" data-layout="grid"><i>05</i>카드 격자</button>
+              <button type="button" data-layout="idx"><i>19</i>컴팩트 인덱스</button>
+              <button type="button" data-layout="news"><i>06</i>신문</button>
+              <button type="button" data-layout="scan"><i>31</i>횡단 독해</button>
+              <button type="button" data-layout="focus"><i>32</i>초점 탐색</button>
+              <button type="button" data-layout="card"><i>08</i>인덱스 카드</button>
+              <button type="button" data-layout="pin"><i>23</i>핀보드</button>
+            </div>
+            <div class="lay-sec">
+              <p class="lay-grp">개발 기록</p>
+              <button type="button" data-layout="paper"><i>01</i>계측 도면</button>
+              <button type="button" data-layout="term"><i>03</i>터미널</button>
+              <button type="button" data-layout="termlt"><i>21</i>터미널 라이트</button>
+              <button type="button" data-layout="dark"><i>14</i>다크 프로</button>
+              <button type="button" data-layout="graph"><i>16</i>그리드지</button>
+              <button type="button" data-layout="bleed"><i>30</i>코드 돌출</button>
+              <button type="button" data-layout="qa"><i>28</i>문답 장부</button>
+            </div>
+            <div class="lay-sec">
+              <p class="lay-grp">편집 디자인</p>
+              <button type="button" data-layout="mag"><i>02</i>매거진</button>
+              <button type="button" data-layout="edit"><i>24</i>에디토리얼</button>
+              <button type="button" data-layout="bigone"><i>20</i>커버</button>
+              <button type="button" data-layout="brut"><i>09</i>브루탈</button>
+              <button type="button" data-layout="soft"><i>17</i>소프트</button>
+              <button type="button" data-layout="sticky"><i>12</i>포스트잇</button>
+              <button type="button" data-layout="hl"><i>13</i>하이라이트</button>
+            </div>
+            <div class="lay-sec">
+              <p class="lay-grp">시간과 구조</p>
+              <button type="button" data-layout="time"><i>10</i>타임라인</button>
+              <button type="button" data-layout="vlabel"><i>26</i>세로 표찰</button>
+              <button type="button" data-layout="split"><i>25</i>분할 판독</button>
+              <button type="button" data-layout="fold"><i>27</i>접힌 모서리</button>
+              <button type="button" data-layout="rail"><i>15</i>좌측 고정</button>
+            </div>
           </div>
         </span>
         <button class="hd-ico hd-theme" type="button" aria-label="테마 전환">
@@ -643,7 +682,12 @@ if (nodes.length) {
       var li = document.createElement('li');
       li.dataset.for = h.id;
       li.className = h.tagName === 'H3' ? 'sub' : '';
-      li.textContent = (h.textContent || '').trim();
+      /* 앵커를 뺀 제목만 넣는다. `h.textContent` 를 그대로 쓰면 위에서 소제목에
+         붙인 '#' 앵커 글자가 목차 항목마다 따라 들어간다("문제부터#").
+         위의 slug 계산은 앵커를 붙이기 **전**에 돌아서 이 문제가 없다. */
+      var clone = h.cloneNode(true), anchor = clone.querySelector('.h-anchor');
+      if (anchor) anchor.parentNode.removeChild(anchor);
+      li.textContent = (clone.textContent || '').trim();
       li.addEventListener('click', function () {
         h.scrollIntoView({ behavior: 'smooth', block: 'start' });
         if (sheet) { sheet.hidden = true; document.body.classList.remove('lock'); }
