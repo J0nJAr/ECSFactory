@@ -24,7 +24,14 @@ namespace EF {
         EntityId controlledEntity = kNullEntity;
         bool hasControlledEntity = false;
         Network::Endpoint endpoint;      // 이 클라이언트의 전송 주소(라우팅용)
+        // ⚠️ 이름과 달리 "언제 받았나"가 아니라 **마지막으로 받은 입력의 적용 예정 tick**이다
+        //    (EnqueueInput이 command.tick을 넣는다). 타임아웃 판정에 쓰면 안 된다 —
+        //    입력 지연 때문에 항상 현재보다 미래를 가리킨다.
         uint64_t lastReceivedTick = 0;
+
+        // 이 클라이언트에게서 **마지막으로 패킷을 받은 서버 tick.** 연결 살아있음 판정용이다.
+        // 패킷 종류를 가리지 않는다 — 입력이 없어도(가만히 서 있어도) ack는 오기 때문이다.
+        uint64_t lastHeardFromTick = 0;
         bool hasTypeTable = false;
         bool hasSnapshot = false;
         std::vector<ComponentTypeDescriptor> remoteTypes;
@@ -91,6 +98,24 @@ namespace EF {
         }
 
         uint32_t AllocateClientId();
+
+        /// @brief 클라이언트 등록을 해제한다. 조종하던 엔티티 id를 돌려준다(없으면 kNullEntity).
+        ///
+        /// 세 가지를 함께 지운다: 클라이언트 상태, endpoint→clientId 매핑, **그리고 신뢰성 채널.**
+        ///
+        /// ⚠️ 채널을 지우는 게 핵심이다. 서버는 매 tick 등록된 전원에게 InputFrame을
+        ///    **reliable**로 보내는데, 떠난 클라의 채널이 남아 있으면 ack가 영영 안 와서
+        ///    미확인 레코드가 tick당 하나씩 무한히 쌓이고 재전송도 계속 나간다.
+        ///    메모리와 대역폭이 함께 새는 자리다.
+        ///
+        /// 월드에서 엔티티를 지우는 것은 **호출자의 몫**이다. NetworkManager는 월드를 모른다.
+        EntityId UnregisterClient(uint32_t clientId);
+
+        /// @brief 이 endpoint의 클라이언트가 살아 있다고 표시한다. 등록되지 않은 endpoint면 무시.
+        ///
+        /// 패킷 종류를 가리지 않고 부른다. 가만히 서 있는 클라이언트는 InputCommand를
+        /// 보내지 않지만 ack는 계속 오므로, 입력만 보고 판정하면 멀쩡한 클라를 쫓아낸다.
+        void MarkClientHeardFrom(const Network::Endpoint& endpoint, uint64_t tick);
         NetworkClientState& GetOrCreateClient(uint32_t clientId);
         [[nodiscard]] const NetworkClientState* FindClient(uint32_t clientId) const;
         NetworkClientState& RegisterClient(uint32_t clientId,

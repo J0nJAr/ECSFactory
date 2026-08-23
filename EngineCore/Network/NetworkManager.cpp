@@ -109,6 +109,37 @@ namespace EF {
         return it == m_endpointToClient.end() ? 0 : it->second;
     }
 
+    void NetworkManager::MarkClientHeardFrom(const Network::Endpoint& endpoint, uint64_t tick) {
+        const uint32_t clientId = ClientIdForEndpoint(endpoint);
+        if (clientId == 0) {
+            return;
+        }
+        auto it = m_clients.find(clientId);
+        if (it != m_clients.end()) {
+            it->second.lastHeardFromTick = tick;
+        }
+    }
+
+    EntityId NetworkManager::UnregisterClient(uint32_t clientId) {
+        auto it = m_clients.find(clientId);
+        if (it == m_clients.end()) {
+            return kNullEntity;
+        }
+
+        const NetworkClientState& state = it->second;
+        const EntityId controlled = state.hasControlledEntity ? state.controlledEntity : kNullEntity;
+
+        if (state.endpoint.IsValid()) {
+            m_endpointToClient.erase(state.endpoint);
+
+            // 신뢰성 채널까지 지운다. 안 지우면 미확인 레코드가 무한히 쌓인다(헤더 주석 참조).
+            m_channels.erase(state.endpoint);
+        }
+
+        m_clients.erase(it);
+        return controlled;
+    }
+
     bool NetworkManager::EnqueueInput(const InputCommand& command) {
         if (command.clientId == 0) {
             return false;
@@ -280,6 +311,18 @@ namespace EF {
         }
 
         while (std::optional<Network::Datagram> datagram = m_connection->ReceiveFrom()) {
+            // ⚠️ 생존 판정은 **여기서** 한다. 앱 패킷이 올라오는 자리(TryReceive)에서 하면 안 된다.
+            //
+            //    조용한 클라이언트는 앱 패킷을 전혀 보내지 않는다 — 키를 안 누르면
+            //    InputCommand가 없다. 그래도 서버가 매 tick 보내는 reliable InputFrame에
+            //    **ack는 계속 보낸다.** 그런데 ack만 든 데이터그램에는 앱 레코드가 없어서
+            //    TryReceive로 올라오지 않는다. 그래서 앱 계층에서 생존을 재면 가만히 서 있는
+            //    플레이어가 타임아웃으로 쫓겨난다(실제로 이 회귀를 냈다).
+            //
+            //    m_currentTick은 Update(tick)에서 갱신되므로 여기서는 한 tick 낡을 수 있다.
+            //    타임아웃이 250 tick 단위라 무해하다.
+            MarkClientHeardFrom(datagram->from, m_currentTick);
+
             std::vector<std::vector<uint8_t>> delivered;
             ChannelFor(datagram->from).OnReceive(datagram->bytes, delivered);
 

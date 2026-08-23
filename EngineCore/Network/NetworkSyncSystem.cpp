@@ -1,5 +1,9 @@
 #include "NetworkSyncSystem.hpp"
 
+#include <algorithm>
+
+#include "Base/Logger.hpp"
+
 #include "Components/PlayerControl.hpp"
 #include "Components/Transform.hpp"
 #include "Gameplay/PlayerMovement.hpp"
@@ -154,6 +158,8 @@ namespace EF {
             HandlePacketOnServer(world, network, received->from, received->packet, tick);
         }
 
+        DropTimedOutClients(world, network, tick);
+
         // 등록된 모든 클라이언트에게 현재 월드 hash를 보낸다.
         const std::vector<InputCommand> confirmed = network.ConfirmInputs(tick);
         ApplyConfirmedInputs(world, confirmed);
@@ -171,6 +177,49 @@ namespace EF {
                     .worldHash = worldHash
                 }, state.endpoint);
             }
+        }
+    }
+
+    // 오랫동안 아무 패킷도 오지 않은 클라이언트를 정리한다.
+    //
+    // 안 하면 두 가지가 샌다.
+    //  1. **신뢰성 채널.** 서버는 매 tick 등록된 전원에게 InputFrame을 reliable로 보낸다.
+    //     떠난 클라의 채널은 ack를 영영 못 받아 미확인 레코드가 tick당 하나씩 무한히 쌓이고,
+    //     재전송도 계속 나간다. 메모리와 대역폭이 함께 샌다.
+    //  2. **월드.** 조종자가 없는 플레이어 엔티티가 영원히 남는다. UDP로 재접속하면
+    //     endpoint가 달라져 새 clientId + 새 스폰이 되므로 유령이 쌓인다.
+    //
+    // ⚠️ 엔티티 파괴가 **확정 입력 경로 밖**에서 일어난다. 스폰과 같은 빚이다(roadmap N2).
+    //    지금은 스폰과 같은 방식으로 수습된다 — 서버 월드가 바뀌면 클라 해시가 어긋나고,
+    //    TickHash 비교가 그걸 잡아 resync로 덮는다. 즉 **접속 해제 한 번에 남은 전원이
+    //    스냅샷 한 번씩을 받는다.** 옳은 방향은 해제를 확정 입력 경로의 이벤트로 만드는 것이고,
+    //    설계 문서 §8의 Dormant(파괴 대신 얼리기)와 함께 처리해야 한다.
+    void NetworkSyncSystem::DropTimedOutClients(World& world, NetworkManager& network, uint64_t tick) {
+        // 5초(50Hz 기준 250 tick). 짧으면 잠깐 끊긴 클라를 쫓아내고, 길면 유령이 오래 남는다.
+        // 신뢰성 계층의 재전송이 이 안에서 몇 번이고 시도할 수 있는 길이로 잡았다.
+        constexpr uint64_t kClientTimeoutTicks = 250;
+
+        // 삭제 대상을 먼저 모은다. Clients()를 순회하면서 지우면 반복자가 무효가 된다.
+        //
+        // ⚠️ clientId로 정렬한다. Clients()는 unordered_map이라 순회 순서가 프로세스마다
+        //    다를 수 있고, 여기서 world.DestroyEntity를 부르므로 **월드 상태를 만들어내는
+        //    순회**다. 결정론 규칙 2번(상태를 만드는 순회는 결정론적 순서로).
+        std::vector<uint32_t> timedOut;
+        for (const auto& [clientId, state] : network.Clients()) {
+            if (tick < state.lastHeardFromTick + kClientTimeoutTicks) {
+                continue;
+            }
+            timedOut.push_back(clientId);
+        }
+        std::sort(timedOut.begin(), timedOut.end());
+
+        for (uint32_t clientId : timedOut) {
+            const EntityId controlled = network.UnregisterClient(clientId);
+            if (controlled != kNullEntity && world.IsAlive(controlled)) {
+                world.DestroyEntity(controlled);
+            }
+            LOG_INFO("클라이언트 {} 타임아웃({}틱 무응답). 등록과 플레이어 엔티티를 정리했다.",
+                     clientId, kClientTimeoutTicks);
         }
     }
 

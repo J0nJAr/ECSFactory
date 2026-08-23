@@ -2063,3 +2063,56 @@ TEST_CASE(Network, ResyncRequestDoesNotStormOnSingleDesync) {
     EXPECT_TRUE(appliedSnapshots >= 1);
     EXPECT_TRUE(appliedSnapshots <= 3);
 }
+
+// 조용한 클라이언트를 쫓아내지 않는다.
+//
+// ⚠️ 이 테스트가 존재하는 이유가 있다. 처음에 생존 판정을 **앱 패킷이 올라오는 자리**
+//    (TryReceive)에 뒀더니, 키를 안 누르는 클라이언트가 250 tick 만에 쫓겨났다.
+//    가만히 서 있으면 InputCommand 를 안 보내기 때문이다. 그래도 서버가 매 tick 보내는
+//    reliable InputFrame 에 ack 는 계속 보내는데, **ack 만 든 데이터그램에는 앱 레코드가
+//    없어서 TryReceive 로 올라오지 않는다.** 생존은 전송 계층에서 재야 한다.
+TEST_CASE(Network, IdleClientIsNotTimedOut) {
+    EF::World serverWorld;
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = WireLockstepPair(serverWorld, clientWorld);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(clientWorld, serverWorld, clientSync, dt, clientId);
+    EXPECT_TRUE(clientId != 0);
+
+    // 입력을 **한 번도 넣지 않고** 타임아웃 길이(250)를 훌쩍 넘겨 돌린다.
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 400);
+
+    // 여전히 등록되어 있어야 하고, 플레이어 엔티티도 살아 있어야 한다.
+    EXPECT_TRUE(serverWorld.GetResource<EF::NetworkManager>().FindClient(clientId) != nullptr);
+    const PlayerProbe probe = ProbePlayer(serverWorld, clientId);
+    EXPECT_TRUE(probe.found);
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+}
+
+// 정말로 사라진 클라이언트는 정리한다 — 등록, 신뢰성 채널, 플레이어 엔티티까지.
+//
+// 정리하지 않으면 두 가지가 샌다. 서버는 매 tick 등록된 전원에게 reliable InputFrame 을
+// 보내므로 떠난 클라의 채널에 미확인 레코드가 무한히 쌓이고(메모리·재전송 트래픽),
+// 조종자 없는 플레이어 엔티티가 월드에 영원히 남는다.
+TEST_CASE(Network, VanishedClientIsCleanedUpAfterTimeout) {
+    EF::World serverWorld;
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = WireLockstepPair(serverWorld, clientWorld);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(clientWorld, serverWorld, clientSync, dt, clientId);
+    EXPECT_TRUE(clientId != 0);
+    EXPECT_TRUE(ProbePlayer(serverWorld, clientId).found);
+
+    // 클라이언트 월드를 더 이상 돌리지 않는다 = 프로세스가 죽은 것과 같다.
+    // 서버만 타임아웃 길이를 넘겨 돌린다.
+    for (uint64_t i = 0; i < 300; ++i) {
+        serverWorld.FixedUpdate(dt, tick + i);
+    }
+
+    EXPECT_TRUE(serverWorld.GetResource<EF::NetworkManager>().FindClient(clientId) == nullptr);
+    EXPECT_FALSE(ProbePlayer(serverWorld, clientId).found);
+}

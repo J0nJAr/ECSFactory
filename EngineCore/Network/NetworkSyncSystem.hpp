@@ -137,6 +137,7 @@ namespace EF {
     private:
         void UpdateClient(World& world, NetworkManager& network);
         void UpdateServer(World& world, NetworkManager& network, uint64_t tick);
+        void DropTimedOutClients(World& world, NetworkManager& network, uint64_t tick);
         void SendQueuedLocalInputs(NetworkManager& network, uint64_t tick);
         void ApplyBufferedInputFrames(World& world, NetworkManager& network);
         void VerifyPendingTickHashes(NetworkManager& network);
