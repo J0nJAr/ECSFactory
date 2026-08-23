@@ -10,6 +10,7 @@
 #include "ECS/World.hpp"
 #include "Gameplay/PlayerMovement.hpp"
 #include "Network/Endpoint.hpp"
+#include "Network/LossyConnection.hpp"
 #include "Network/MemoryConnection.hpp"
 #include "Network/NetworkManager.hpp"
 #include "Network/NetworkSyncSystem.hpp"
@@ -1441,4 +1442,238 @@ TEST_CASE(Network, PlayerSpawnPositionsDifferPerClient) {
     // 클라이언트 쪽에도 두 플레이어가 모두 와 있어야 한다(= 남의 캐릭터도 그릴 수 있다).
     EXPECT_TRUE(ProbePlayer(clientOneWorld, idTwo).found);
     EXPECT_TRUE(ProbePlayer(clientTwoWorld, idOne).found);
+}
+
+// ---------------------------------------------------------------------------
+// LossyConnection — 실제 전송 경로 위에 손실/중복/지연을 주입하는 데코레이터.
+//
+// SimulatedNetwork 계열 테스트와 다른 점: 여기서는 "허브"가 아니라 이미 존재하는
+// MemoryConnection을 한 겹 감싼다. 같은 방식으로 UDPConnection도 감쌀 수 있다는 것이
+// 이 클래스의 요점이라, 테스트도 데코레이터 형태 그대로 쓴다.
+// ---------------------------------------------------------------------------
+namespace {
+    // 내용으로 "어떤 패킷이 살아남았는지"를 식별하려고 첫 바이트에 일련번호를 박는다.
+    std::vector<uint8_t> NumberedDatagram(uint8_t id) {
+        return std::vector<uint8_t>{ id, static_cast<uint8_t>(0xA0 + id) };
+    }
+
+    // 신뢰 채널용 레코드. 600바이트로 부풀리는 이유가 있다 — ReliabilityChannel::Flush는
+    // 대기 중인 레코드를 한 데이터그램(최대 1200바이트)에 몰아 담는다. 2바이트짜리를 8개
+    // 넣으면 데이터그램 **하나**로 끝나서, 그 하나가 운 좋게 살아남으면 손실률을 아무리
+    // 올려도 재전송이 한 번도 안 걸린다(실제로 처음엔 그렇게 짜서 테스트가 무의미했다).
+    // 600바이트면 데이터그램당 2개씩 나뉘어 매 flush가 여러 데이터그램을 낳는다.
+    // 조각화 임계(1024)보다는 작게 둬서, 여기서는 재전송만 검증하고 재조립은
+    // ReliabilityChannelReassemblesFragmentedRecord에 맡긴다.
+    std::vector<uint8_t> PaddedRecord(uint8_t id) {
+        std::vector<uint8_t> record(600);
+        for (std::size_t i = 0; i < record.size(); ++i) {
+            record[i] = static_cast<uint8_t>(id * 31 + i * 7);
+        }
+        record[0] = id;
+        return record;
+    }
+
+    // lossy 링크에 count개를 밀어넣고 반대편에 도착한 일련번호 목록을 돌려준다.
+    std::vector<uint8_t> RunLossPattern(uint64_t seed, float lossRate, uint8_t count) {
+        auto pair = EF::Network::MemoryConnection::CreatePair();
+
+        EF::Network::LossyLinkSettings settings;
+        settings.lossRate = lossRate;
+        settings.seed = seed;
+
+        EF::Network::LossyConnection lossy(pair.first, settings);
+        for (uint8_t i = 0; i < count; ++i) {
+            lossy.SendTo(lossy.DefaultPeer(), NumberedDatagram(i));
+        }
+
+        std::vector<uint8_t> arrived;
+        while (auto datagram = pair.second->ReceiveFrom()) {
+            arrived.push_back(datagram->bytes[0]);
+        }
+        return arrived;
+    }
+}
+
+TEST_CASE(Network, LossyConnectionPassesEverythingThroughWhenDisabled) {
+    auto pair = EF::Network::MemoryConnection::CreatePair();
+
+    // 기본 생성 = 주입 없음. 실수로 켜둔 채 배포되는 사고를 막는 무해한 기본값.
+    EF::Network::LossyConnection lossy(pair.first, EF::Network::LossyLinkSettings{});
+
+    constexpr uint8_t kCount = 32;
+    for (uint8_t i = 0; i < kCount; ++i) {
+        EXPECT_TRUE(lossy.SendTo(lossy.DefaultPeer(), NumberedDatagram(i)));
+    }
+
+    // 지연 큐를 아예 쓰지 않아야 한다 — 기본값에서는 Advance를 잊어도 멈추지 않는다.
+    EXPECT_EQ(lossy.PendingDelayedCount(), static_cast<std::size_t>(0));
+    EXPECT_EQ(lossy.DroppedCount(), static_cast<uint64_t>(0));
+    EXPECT_EQ(lossy.ForwardedCount(), static_cast<uint64_t>(kCount));
+
+    std::vector<uint8_t> arrived;
+    while (auto datagram = pair.second->ReceiveFrom()) {
+        arrived.push_back(datagram->bytes[0]);
+    }
+
+    EXPECT_EQ(arrived.size(), static_cast<std::size_t>(kCount));
+    for (uint8_t i = 0; i < kCount; ++i) {
+        EXPECT_EQ(arrived[i], i);
+    }
+}
+
+TEST_CASE(Network, LossyConnectionRepeatsTheSameDropPatternForTheSameSeed) {
+    // 재현성이 이 클래스의 존재 이유다. 같은 시드 + 같은 송신 순서 = 같은 손실 패턴.
+    const std::vector<uint8_t> first = RunLossPattern(20260823, 0.5f, 64);
+    const std::vector<uint8_t> second = RunLossPattern(20260823, 0.5f, 64);
+    EXPECT_TRUE(first == second);
+
+    // 절반쯤은 살아남고 절반쯤은 죽어야 한다(전부 통과/전부 손실이면 위 비교가 무의미해진다).
+    EXPECT_TRUE(!first.empty());
+    EXPECT_TRUE(first.size() < static_cast<std::size_t>(64));
+
+    // 시드가 다르면 패턴도 달라야 한다. 64번 시행에서 두 패턴이 우연히 같을 확률은
+    // 사실상 0이라 flaky 걱정 없이 단언할 수 있다.
+    const std::vector<uint8_t> other = RunLossPattern(1, 0.5f, 64);
+    EXPECT_TRUE(first != other);
+}
+
+TEST_CASE(Network, LossyConnectionDropsEverythingAtFullLossRate) {
+    auto pair = EF::Network::MemoryConnection::CreatePair();
+
+    EF::Network::LossyLinkSettings settings;
+    settings.lossRate = 1.0f;
+    settings.seed = 7;
+
+    EF::Network::LossyConnection lossy(pair.first, settings);
+    for (uint8_t i = 0; i < 16; ++i) {
+        // 버려도 SendTo는 true다 — 소켓 송신은 성공했고 패킷은 회선이 먹은 것이다.
+        // 여기서 false를 내면 상위 계층이 송신 실패로 오해해 재시도가 이중으로 걸린다.
+        EXPECT_TRUE(lossy.SendTo(lossy.DefaultPeer(), NumberedDatagram(i)));
+    }
+
+    EXPECT_EQ(lossy.DroppedCount(), static_cast<uint64_t>(16));
+    EXPECT_EQ(lossy.ForwardedCount(), static_cast<uint64_t>(0));
+    EXPECT_FALSE(pair.second->ReceiveFrom().has_value());
+}
+
+TEST_CASE(Network, LossyConnectionHoldsDelayedDatagramsUntilTheReleaseTick) {
+    auto pair = EF::Network::MemoryConnection::CreatePair();
+
+    EF::Network::LossyLinkSettings settings;
+    settings.minDelayTicks = 3;
+    settings.maxDelayTicks = 3; // 고정 지연 — 지터 없음
+    settings.seed = 11;
+
+    EF::Network::LossyConnection lossy(pair.first, settings);
+    lossy.SendTo(lossy.DefaultPeer(), NumberedDatagram(1));
+
+    // 아직 회선 위에 떠 있다.
+    EXPECT_EQ(lossy.PendingDelayedCount(), static_cast<std::size_t>(1));
+    EXPECT_FALSE(pair.second->ReceiveFrom().has_value());
+
+    lossy.Advance(1);
+    lossy.Advance(2);
+    EXPECT_EQ(lossy.PendingDelayedCount(), static_cast<std::size_t>(1));
+    EXPECT_FALSE(pair.second->ReceiveFrom().has_value());
+
+    // 지연은 사라지는 게 아니라 미뤄지는 것이다 — 결국 도착한다.
+    lossy.Advance(3);
+    EXPECT_EQ(lossy.PendingDelayedCount(), static_cast<std::size_t>(0));
+
+    auto datagram = pair.second->ReceiveFrom();
+    EXPECT_TRUE(datagram.has_value());
+    EXPECT_EQ(datagram->bytes[0], static_cast<uint8_t>(1));
+}
+
+TEST_CASE(Network, LossyConnectionDuplicatesDatagramsAtFullDuplicateRate) {
+    auto pair = EF::Network::MemoryConnection::CreatePair();
+
+    EF::Network::LossyLinkSettings settings;
+    settings.duplicateRate = 1.0f;
+    settings.seed = 5;
+
+    EF::Network::LossyConnection lossy(pair.first, settings);
+    lossy.SendTo(lossy.DefaultPeer(), NumberedDatagram(9));
+
+    EXPECT_EQ(lossy.DuplicatedCount(), static_cast<uint64_t>(1));
+
+    std::vector<uint8_t> arrived;
+    while (auto datagram = pair.second->ReceiveFrom()) {
+        arrived.push_back(datagram->bytes[0]);
+    }
+    EXPECT_EQ(arrived.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(arrived[0], static_cast<uint8_t>(9));
+    EXPECT_EQ(arrived[1], static_cast<uint8_t>(9));
+}
+
+TEST_CASE(Network, ReliabilityChannelRecoversFromLossyConnectionByResending) {
+    using EF::Network::ReliabilityChannel;
+
+    // 이 파일에서 제일 값어치 있는 테스트: "손실이 있어도 신뢰 채널은 결국 전부 전달한다"를
+    // 시뮬레이터가 아니라 **실제 전송 구현 위에 씌운 데코레이터**로 확인한다.
+    // 양쪽 끝을 각각 감싸서 데이터 방향과 ack 방향 둘 다 열화시킨다(ack도 잃는다).
+    auto pair = EF::Network::MemoryConnection::CreatePair();
+
+    EF::Network::LossyLinkSettings settings;
+    settings.lossRate = 0.4f;
+    settings.minDelayTicks = 0;
+    settings.maxDelayTicks = 2; // 지터 → 재정렬까지 저절로 섞인다
+    settings.seed = 424242;
+    auto senderLink = std::make_shared<EF::Network::LossyConnection>(pair.first, settings);
+
+    settings.seed = 777777; // 방향마다 다른 수열을 써서 손실이 대칭으로 겹치지 않게 한다
+    auto receiverLink = std::make_shared<EF::Network::LossyConnection>(pair.second, settings);
+
+    ReliabilityChannel senderChannel;
+    ReliabilityChannel receiverChannel;
+
+    constexpr uint8_t kRecordCount = 8;
+    for (uint8_t i = 0; i < kRecordCount; ++i) {
+        senderChannel.Enqueue(ReliabilityChannel::Delivery::Reliable, PaddedRecord(i));
+    }
+
+    std::vector<std::vector<uint8_t>> delivered;
+    constexpr uint64_t kMaxTicks = 400; // 재전송 간격 4틱 * 여유. 무한 루프 방지용 상한.
+    uint64_t usedTicks = 0;
+
+    for (uint64_t tick = 0; tick < kMaxTicks; ++tick) {
+        usedTicks = tick;
+
+        // ⚠️ 지연 큐를 굴리는 펌프. NetworkManager::Update(tick) 옆에서 같이 불러야 한다.
+        senderLink->Advance(tick);
+        receiverLink->Advance(tick);
+
+        for (const std::vector<uint8_t>& datagram : senderChannel.Flush(tick)) {
+            senderLink->SendTo(senderLink->DefaultPeer(), datagram);
+        }
+        while (auto received = receiverLink->ReceiveFrom()) {
+            receiverChannel.OnReceive(received->bytes, delivered);
+        }
+
+        // 반대 방향(ack)도 같은 열화를 겪는다.
+        for (const std::vector<uint8_t>& datagram : receiverChannel.Flush(tick)) {
+            receiverLink->SendTo(receiverLink->DefaultPeer(), datagram);
+        }
+        while (auto received = senderLink->ReceiveFrom()) {
+            std::vector<std::vector<uint8_t>> ignored;
+            senderChannel.OnReceive(received->bytes, ignored);
+        }
+
+        if (delivered.size() == static_cast<std::size_t>(kRecordCount)) {
+            break;
+        }
+    }
+
+    // 전부, 그리고 보낸 순서대로 도착해야 한다.
+    EXPECT_EQ(delivered.size(), static_cast<std::size_t>(kRecordCount));
+    for (uint8_t i = 0; i < kRecordCount; ++i) {
+        EXPECT_TRUE(delivered[i] == PaddedRecord(i));
+    }
+
+    // 링크가 실제로 나빴는지 확인한다. 손실이 0이었다면 위 단언은 아무것도 증명하지 못한다.
+    EXPECT_TRUE(senderLink->DroppedCount() > static_cast<uint64_t>(0));
+    EXPECT_TRUE(receiverLink->DroppedCount() > static_cast<uint64_t>(0));
+
+    // 그리고 재전송으로 "결국" 이겼다는 것 — 상한에 걸려 끝난 게 아니다.
+    EXPECT_TRUE(usedTicks < kMaxTicks - 1);
 }

@@ -255,6 +255,37 @@ Frame N
 - 클라이언트 예측/rollback은 아직 없다. 클라이언트는 서버 확정 프레임을 기다린 뒤 뒤따라 시뮬레이션한다.
 - endpoint timeout/연결 종료, delta snapshot, tick 단위 배칭은 아직 별도 과제다.
 
+## 링크 열화 주입 — `LossyConnection`
+
+`SimulatedNetwork`는 손실·중복·재정렬을 결정론적으로 넣지만 **자기 자신이 전송 구현**이다. 그래서 이미 열려 있는 `UDPConnection`이나 `MemoryConnection` 위에는 씌울 수 없고, 실행 파일로 띄운 서버·클라이언트 사이에서는 못 쓴다.
+
+`LossyConnection`([EngineCore/Network/LossyConnection.hpp](../../EngineCore/Network/LossyConnection.hpp))은 그 빈칸을 메우는 **`INetworkConnection` 데코레이터**다. 아무 전송 구현이나 하나 감싸서 같은 인터페이스를 다시 내놓는다.
+
+```cpp
+EF::Network::LossyLinkSettings link;
+link.lossRate = 0.2f;       // 20% 손실
+link.duplicateRate = 0.05f; // 5% 중복
+link.minDelayTicks = 1;     // 1~4틱 지연(= 20~80ms @50Hz). min != max면 지터
+link.maxDelayTicks = 4;
+link.seed = 20260823;       // 같은 시드 = 같은 패턴
+
+auto socket = std::make_shared<EF::Network::UDPConnection>();
+socket->Connect("127.0.0.1", 6780);
+auto lossy = std::make_shared<EF::Network::LossyConnection>(socket, link);
+world.AddResource<EF::NetworkManager>(lossy); // NetworkManager는 감싼 쪽만 본다
+
+// 매 fixed tick: NetworkManager::Update(tick) 옆에서 같이 굴린다.
+lossy->Advance(tick);
+```
+
+설계 판단 셋:
+
+1. **기본값은 무해하다.** `LossyLinkSettings{}`는 손실·중복·지연이 전부 0이고, 그때 `SendTo`는 난수도 큐도 건드리지 않고 곧장 통과한다. 실수로 켜둔 채 배포되는 사고를 코드로 막는다.
+2. **지연은 시간이 아니라 tick이다.** 버린 대안은 (a) wall-clock — 테스트가 실제로 sleep해야 하고 스케줄러에 따라 결과가 흔들려 재현성이라는 목적 자체를 깬다, (b) `ReceiveFrom()` 호출 횟수를 논리 시계로 쓰기 — 외부 펌프가 필요 없어 편하지만 "폴링 횟수"는 단위로서 의미가 없고 수신을 안 하는 tick에는 시계가 멈춘다. 채택한 것은 `Advance(tick)`으로 논리 tick을 주입하는 방식이다. 엔진의 네트워크 펌프가 이미 전부 tick을 받는 형태라 새 개념이 늘지 않고, 고정 timestep(20ms) 위에서 "N틱 지연"이 곧 "N × 20ms"로 읽힌다. **함정: 지연을 켜고 `Advance`를 안 부르면 지연 큐가 영원히 안 풀린다.**
+3. **송신 경로에만 주입한다.** 수신 경로에서 버리면 "이미 받은 것을 버리는" 셈이라 실제 링크 모델과 어긋나고, 한쪽만 감싸도 양방향이 죽어 방향별 손실률을 줄 수 없다. 양방향을 열화시키려면 양 끝을 각각 감싼다 — 비대칭 회선을 재현할 수 있어 표현력이 더 좋다.
+
+여기 쓰이는 `std::mt19937_64`와 `float` 확률은 **결정론 규칙(§Fixed64 전용)의 예외가 아니라 대상 밖**이다. 이 난수는 시뮬레이션 상태를 만들지 않고 "패킷이 도착했는가"만 정한다 — 그건 원래 네트워크가 마음대로 정하는 것이다. `std::uniform_real_distribution` 대신 엔진 raw 출력을 직접 비교하는 이유도 재현성이다(표준이 distribution의 수열은 구현 간에 못 박지 않는다).
+
 ## 현재 완료된 범위
 
 - 초기 handshake와 snapshot 적용
@@ -271,6 +302,7 @@ Frame N
 - client hash mismatch 감지
 - ResyncRequest 후 snapshot 재적용
 - 손실/중복/재정렬 링크에서 2 클라이언트 lockstep 수렴 테스트
+- 실제 전송 구현 위에 씌우는 `LossyConnection`(손실/중복/tick 지연 주입, 시드 재현)
 
 ## 다음 단계
 

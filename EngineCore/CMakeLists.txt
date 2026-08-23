@@ -7,6 +7,7 @@ target_sources(EngineCore
         Gameplay/InputMapping.cpp
         Gameplay/PlayerMovement.cpp
         Math/Math.cpp
+        Network/LossyConnection.cpp
         Network/MemoryConnection.cpp
         Network/NetworkManager.cpp
         Network/NetworkSyncSystem.cpp
@@ -49,6 +50,7 @@ target_sources(EngineCore
             Network/Endpoint.hpp
             Network/INetworkConnection.hpp
             Network/InputCommand.hpp
+            Network/LossyConnection.hpp
             Network/MemoryConnection.hpp
             Network/NetUtils.hpp
             Network/NetworkManager.hpp
