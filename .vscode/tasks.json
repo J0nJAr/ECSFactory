@@ -53,6 +53,7 @@
       "description": "Choose the CMake target folder to update",
       "options": [
         "EngineCore",
+        "EngineRender",
         "GameClient",
         "GameServer",
         "tests"

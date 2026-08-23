@@ -86,16 +86,20 @@ ctest --preset default -R Network.LockstepConvergesTwoClientsOverLossyReordering
 CMake 소스 목록은 **글롭이 아니라 명시적**이다. 새 `.cpp`/`.hpp`는 해당 `CMakeLists.txt`에 등록되기 전까지 컴파일되지 않는다(`.cpp`는 `target_sources PRIVATE`, `EngineCore`의 `.hpp`는 `FILE_SET HEADERS` 블록). 손으로 편집하지 말고 헬퍼를 쓴다:
 
 ```powershell
-powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -RelativePath ECS/MyThing.hpp
+powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore   -Kind pair -RelativePath ECS/MyThing.hpp
+powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -RelativePath Render/Dx11/Foo.hpp
 ```
 
-파일을 만들고 대상 타깃의 `CMakeLists.txt`에 등록까지 해준다. VS Code 태스크 **"CMake: Create C++ Artifact"**로도 같은 걸 할 수 있다. `-Kind`는 `pair`/`source`/`header`, `-Target`은 `EngineCore`/`GameClient`/`GameServer`/`tests`.
+파일을 만들고 대상 타깃의 `CMakeLists.txt`에 등록까지 해준다. VS Code 태스크 **"CMake: Create C++ Artifact"**로도 같은 걸 할 수 있다. `-Kind`는 `pair`/`source`/`header`, `-Target`은 `EngineCore`/`EngineRender`/`GameClient`/`GameServer`/`tests`.
 
-> ⚠️ **이 헬퍼에는 확인된 결함이 둘 있다. 고쳐지기 전까지는 손으로 등록하는 편이 안전하다.**
-> 1. **`-RelativePath`에 확장자를 빼면 `MyThing..hpp`(점 두 개)가 만들어진다.** `ChangeExtension(path, $null)`에 PowerShell이 `$null` 대신 빈 문자열을 넘겨서 끝에 점이 남는다. 확장자를 붙여서 부를 것.
-> 2. **`EngineRender` 타깃을 모른다.** `-Target EngineCore`로 부르면 `EngineRender`용 파일이 **조용히 `EngineCore`에 등록된다.** 빌드가 통과하므로 알아채기 어렵다. `EngineRender`에 파일을 추가할 때는 `EngineCore/CMakeLists.txt`의 **두 번째** `target_sources` 블록에 손으로 적을 것.
->
-> (2번을 고치려는 시도가 있었으나 스크립트가 `EngineCore/CMakeLists.txt`를 통째로 비워버려 되돌렸다. 다시 시도한다면 **반드시 스크래치 사본에서 검증**하고, 저장소 파일에 직접 실행하지 말 것.)
+`-RelativePath`의 확장자는 있어도 없어도 되고(`ECS/MyThing` = `ECS/MyThing.hpp` = `ECS/MyThing.cpp`), 같은 명령을 두 번 돌려도 중복 등록되지 않는다. 소스 목록이 이미 정렬되어 있으면 정렬 위치에 끼워 넣는다.
+
+**`-Target EngineRender`가 곧 "서버가 이걸 링크하지 않는다"는 선언이다.** `EngineRender`의 소스는 경로상 `EngineCore/` 아래에 있지만(`Render/`, `Platform/`, `UI/`) 등록은 `EngineCore/CMakeLists.txt`의 **두 번째** `target_sources` 블록으로 간다. 타깃을 잘못 고르면 빌드는 통과하고 설계 규칙만 조용히 깨진다 — 그래서 스크립트가 디렉터리로 추측하지 않고 `-Target`을 그대로 따른다.
+
+안전장치: CMakeLists를 쓰기 전에 "원본의 모든 줄이 순서대로 남아 있고, 늘어난 줄은 방금 넣은 것뿐"을 검증하고, 어긋나면 **쓰지 않고 중단**한다. 예전에 이 파일을 통째로 비워버린 사고가 있었기 때문이다(그 사고 모드를 재현하는 시뮬레이션으로 차단을 확인했다).
+
+> 예전에 여기 적혀 있던 결함 둘(`MyThing..hpp` 이중 점, `EngineRender` 타깃 부재)은 해결됐다.
+> 함께 드러나 고친 것: 파일 전체를 문자열로 치환하던 탓에 `EngineCore`에 넣은 `.cpp`가 **`EngineRender` 블록에도 같이 등록**되던 문제, 헤더 등록 경로가 잘못된 정규식(`^\\s*\\)`)으로 항상 예외를 던지던 문제, CRLF 파일에서 중복 검사가 절대 맞지 않던 문제(.NET의 multiline `$`는 `\r`를 건너뛰지 않는다).
 
 ### clangd / IDE 참고
 
