@@ -5,6 +5,7 @@ add_executable(EngineCoreTests
     MathTests.cpp
     NetworkTests.cpp
     RegistryViewTests.cpp
+    RenderTests.cpp
     SparseSetTests.cpp
     TestHarness.hpp
     UITests.cpp
@@ -75,3 +76,10 @@ add_test(NAME UI.LayoutSpecSupportsAsymmetricStretchMargins COMMAND EngineCoreTe
 add_test(NAME UI.CustomAnchorRectExpressesBottomAlignedFullWidthPanel COMMAND EngineCoreTests UI.CustomAnchorRectExpressesBottomAlignedFullWidthPanel)
 add_test(NAME UI.NestedResolutionAccumulatesParentOffsets COMMAND EngineCoreTests UI.NestedResolutionAccumulatesParentOffsets)
 add_test(NAME Network.BatchedInputFramesDoNotCauseFalseHashMismatch COMMAND EngineCoreTests Network.BatchedInputFramesDoNotCauseFalseHashMismatch)
+
+add_test(NAME Render.CameraCenterMapsToNdcOrigin COMMAND EngineCoreTests Render.CameraCenterMapsToNdcOrigin)
+add_test(NAME Render.WorldXGoesRightAndWorldZGoesUp COMMAND EngineCoreTests Render.WorldXGoesRightAndWorldZGoesUp)
+add_test(NAME Render.AspectStretchesHorizontalExtentOnly COMMAND EngineCoreTests Render.AspectStretchesHorizontalExtentOnly)
+add_test(NAME Render.MovingCameraShiftsWorldOppositeOnScreen COMMAND EngineCoreTests Render.MovingCameraShiftsWorldOppositeOnScreen)
+add_test(NAME Render.DepthIsConstantInsideClipRange COMMAND EngineCoreTests Render.DepthIsConstantInsideClipRange)
+add_test(NAME Render.DegenerateAspectFallsBackToIdentity COMMAND EngineCoreTests Render.DegenerateAspectFallsBackToIdentity)

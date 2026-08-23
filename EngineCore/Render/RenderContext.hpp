@@ -7,10 +7,13 @@
 namespace EF {
 
     // 이번 프레임에 그릴 것 하나.
+    //
+    // 좌표계는 **월드**다. 화면 좌표로 바꾸는 것은 카메라의 몫이고(Render/Camera.hpp),
+    // 2D 탑다운 단계에서 쿼드는 XZ 평면(지면)에 눕는다. 그래서:
     struct DrawItem {
-        Float3 position;          // 월드 좌표 (2D 단계에서 y는 0)
-        Float2 size;
-        float rotation = 0.0f;    // 라디안, 화면 평면 기준 회전
+        Float3 position;          // 월드 좌표. 2D 단계에서 y(높이)는 투영에서 버려진다
+        Float2 size;              // 지면 위 크기. x는 월드 X 방향, y는 월드 **Z** 방향 길이
+        float rotation = 0.0f;    // 라디안. Y축(수직축) 기준 회전 = 탑다운에서 본 방향
         Color color;
     };
 

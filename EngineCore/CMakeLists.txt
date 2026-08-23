@@ -93,6 +93,7 @@ add_library(EngineRender STATIC)
 target_sources(EngineRender
     PRIVATE
         Platform/Win32Window.cpp
+        Render/Camera.cpp
         Render/Dx11/Dx11Renderer.cpp
         UI/AnchorLayout.cpp
     PUBLIC
@@ -101,6 +102,7 @@ target_sources(EngineRender
         FILES
             Platform/IWindow.hpp
             Platform/Win32Window.hpp
+            Render/Camera.hpp
             Render/Dx11/ComPtr.hpp
             Render/Dx11/Dx11Renderer.hpp
             Render/IRenderer.hpp

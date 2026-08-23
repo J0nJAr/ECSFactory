@@ -57,7 +57,7 @@ R2
 | R1 | `Win32Window` + 메시지 펌프 (빈 창이 뜨고 X로 닫힌다) | ✅ |
 | R2 | Device / SwapChain / RTV + `BeginFrame`·`Present`, HARDWARE→WARP 폴백 | ✅ |
 | R3 | 런타임 셰이더 컴파일 + Dynamic VB + 배칭 Draw (쿼드 하나) | ✅ |
-| R4 | `Camera`(ortho) + ViewProj 상수버퍼 | · |
+| R4 | `Camera`(ortho) + ViewProj 상수버퍼 (월드 XZ → 화면) | ✅ |
 | R5 | `Renderable` + `RenderSystem` + `View<Transform, Renderable>` | · |
 | R6 | **I1과 합류** — 키 입력이 서버 확정을 거쳐 화면 속 엔티티를 움직인다 | · |
 | R7 | `PreviousTransform` + alpha 보간 (50Hz인데 부드럽게) | · |

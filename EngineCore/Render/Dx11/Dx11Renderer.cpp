@@ -432,11 +432,16 @@ float4 PSMain(VSOut input) : SV_TARGET
             const float sinR = std::sin(item.rotation);
 
             // 중심 기준 네 모서리를 회전시켜 월드 위치에 더한다.
-            auto corner = [&](float ox, float oy) {
+            //
+            // ⚠️ 쿼드는 **XZ 평면(지면)에 눕는다.** 크기 오프셋이 x와 z로 가고 y는 그대로다.
+            //    탑다운 카메라가 월드 XZ를 화면에 투영하고 Y(높이축)를 버리기 때문에
+            //    (Render/Camera.hpp), 쿼드를 XY에 펴면 화면에서 선으로 찌그러진다.
+            //    회전은 그래서 Y축(수직축) 기준이다.
+            auto corner = [&](float ox, float oz) {
                 Vertex v;
-                v.x = item.position.x + (ox * cosR - oy * sinR);
-                v.y = item.position.y + (ox * sinR + oy * cosR);
-                v.z = item.position.z;
+                v.x = item.position.x + (ox * cosR - oz * sinR);
+                v.y = item.position.y;
+                v.z = item.position.z + (ox * sinR + oz * cosR);
                 v.r = item.color.r;
                 v.g = item.color.g;
                 v.b = item.color.b;
@@ -444,6 +449,7 @@ float4 PSMain(VSOut input) : SV_TARGET
                 return v;
             };
 
+            // 이름의 top/bottom은 **화면 기준**이다. +Z가 화면 위로 가므로 +hh가 top이다.
             const Vertex topLeft     = corner(-hw,  hh);
             const Vertex topRight    = corner( hw,  hh);
             const Vertex bottomLeft  = corner(-hw, -hh);

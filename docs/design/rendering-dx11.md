@@ -104,8 +104,8 @@ classDiagram
     }
     class Camera {
         +Float2 position
-        +float zoom
-        +Mat4 ViewProj(aspect)
+        +float viewHeightWorldUnits
+        +Mat4 ViewProjection(aspect)
     }
     class PreviousTransform {
         +Vector3 position
@@ -123,7 +123,17 @@ classDiagram
 - `PreviousTransform` — 직전 틱의 Transform(보간용). 시뮬이 아니라 표현용.
 
 **리소스:**
-- `Camera` — 위치/줌, view-projection 행렬 계산(float).
+- `Camera` — 위치와 시야 크기, view-projection 행렬 계산(float).
+
+> **R4에서 확정된 두 가지** (구현이 위 스케치와 다른 부분):
+>
+> 1. **`zoom` 대신 `viewHeightWorldUnits`.** "zoom이 크면 확대인가 축소인가"를 읽는 쪽이 매번
+>    추측하게 된다. "화면 세로에 월드 몇 유닛이 들어가는가"는 방향이 하나뿐이다.
+> 2. **쿼드는 XZ 평면(지면)에 눕는다.** 게임플레이 이동이 XZ에서 일어나므로
+>    (`kInputMoveForward`가 +Z), 카메라는 월드 X→화면 가로, 월드 **Z**→화면 세로로 투영하고
+>    월드 Y(높이)를 버린다. 그래서 `Dx11Renderer::Submit`의 쿼드 확장도 x·z로 간다 —
+>    XY에 펴면 화면에서 선으로 찌그러진다. 회전은 Y축(수직축) 기준이다.
+>    이건 R4에서 **고친 결함**이다. R3까지는 카메라가 항등이라 드러나지 않았다.
 - `FrameContext` — 이번 프레임의 보간 alpha와 frame dt(엔진 ↔ RenderSystem 채널).
 
 ---

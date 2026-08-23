@@ -13,6 +13,7 @@
 #include "Network/NetworkSyncSystem.hpp"
 #include "Network/UDPConnection.hpp"
 #include "Platform/Win32Window.hpp"
+#include "Render/Camera.hpp"
 #include "Render/Dx11/Dx11Renderer.hpp"
 #include "Render/RenderContext.hpp"
 #include "Render/RenderTypes.hpp"
@@ -120,8 +121,13 @@ protected:
 
             BuildFrame(frameContext, window);
 
+            // aspect는 매 프레임 창에서 읽는다. 리사이즈 직후에도 한 프레임 늦지 않게.
+            const float aspect = window.Height() > 0
+                ? static_cast<float>(window.Width()) / static_cast<float>(window.Height())
+                : 0.0f;
+
             renderer.BeginFrame(Color{ 0.09f, 0.10f, 0.13f, 1.0f });
-            renderer.SetCamera(Mat4::Identity());
+            renderer.SetCamera(m_camera.ViewProjection(aspect));
             renderer.Submit(frameContext);
 
             // Present 전에 찍어야 한다. SWAP_EFFECT_DISCARD라 Present 후 내용은 보장되지 않는다.
@@ -146,19 +152,32 @@ protected:
     }
 
 private:
-    // R3 확인용 임시 장면. R5에서 RenderSystem이 ECS를 순회해 채우게 되면 사라진다.
+    // R4 확인용 임시 장면. R5에서 RenderSystem이 ECS를 순회해 채우게 되면 사라진다.
     //
-    // 좌표는 아직 NDC다(카메라가 항등이라 -1..1이 화면 전체). 월드 좌표를 쓰려면
-    // R4에서 Camera가 ortho 행렬을 만들어 SetCamera로 넘겨야 한다.
+    // 좌표는 이제 **월드**다. 카메라(viewHeight 60)가 화면에 매핑한다.
+    // 축 방향을 눈으로 확인할 수 있게 세 개를 다른 색으로 둔다 —
+    // 원점(하늘색), +X 20(빨강, 오른쪽에 보여야 함), +Z 20(초록, 위쪽에 보여야 함).
     void BuildFrame(RenderContext& context, const IWindow& window) {
         static_cast<void>(window);
         context.Clear();
 
         context.Add(DrawItem{
             .position = Float3{ 0.0f, 0.0f, 0.0f },
-            .size = Float2{ 0.5f, 0.5f },
+            .size = Float2{ 8.0f, 8.0f },
             .rotation = 0.0f,
             .color = Color{ 0.35f, 0.75f, 1.0f, 1.0f }
+        });
+        context.Add(DrawItem{
+            .position = Float3{ 20.0f, 0.0f, 0.0f },
+            .size = Float2{ 6.0f, 6.0f },
+            .rotation = 0.0f,
+            .color = Color{ 0.90f, 0.30f, 0.25f, 1.0f }
+        });
+        context.Add(DrawItem{
+            .position = Float3{ 0.0f, 0.0f, 20.0f },
+            .size = Float2{ 6.0f, 6.0f },
+            .rotation = 0.0f,
+            .color = Color{ 0.35f, 0.85f, 0.40f, 1.0f }
         });
     }
 
@@ -217,6 +236,7 @@ private:
     World* m_localServerWorld = nullptr;
     NetworkSyncSystem* m_clientSync = nullptr;
     NetworkSyncSystem* m_localServerSync = nullptr;
+    Camera m_camera;
     uint64_t m_frameLimit = 0;
     std::string m_capturePath;
 };

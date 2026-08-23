@@ -20,7 +20,7 @@
 | 월드 스냅샷 + `ComputeHash()` 검증 | ✅ |
 | 신뢰성 UDP 전송 (`ReliabilityChannel`, 다중 peer, 조각화) | ✅ |
 | 결정론 입력 lockstep (입력 확정 → `InputFrame` 릴레이 → 전 peer 동일 시뮬) | ✅ M1~M7 |
-| **렌더링** | 🟡 R0~R3 완료 (창 + DX11 + 쿼드). R4(카메라)부터 남음 |
+| **렌더링** | 🟡 R0~R4 완료 (창 + DX11 + 쿼드 + 직교 카메라). R5(ECS 연결)부터 남음 |
 | **UI** | 🟡 U3(앵커 레이아웃) 완료 — 순수 함수라 단위 테스트로 덮임. 그릴 수단(U1 드로우 목록·U2 폰트)이 없어 화면엔 안 나온다 |
 | **실제 키보드/마우스 입력 배선** | ❌ 테스트가 `QueueLocalInput`을 직접 호출 중 |
 | **결정론 스폰/디스폰** | 🟡 N1(스냅샷에 EntityManager 상태 포함) 완료, N2(확정 입력에서만 스폰) 남음 — §6 |
@@ -185,7 +185,7 @@ UI를 렌더링 중간에 끼우는 이유: **UI는 카메라가 필요 없어�
 | ✅ R1 | `IWindow` / `Win32Window` + 메시지 펌프 | 빈 창이 뜨고 X로 닫힌다 (완료) |
 | ✅ R2 | Device/SwapChain/RTV + BeginFrame/Present, HARDWARE→WARP 폴백 | 창이 단색으로 칠해진다 (완료) |
 | ✅ R3 | 런타임 셰이더 컴파일 + Dynamic VB + 배칭 Draw | 화면에 쿼드 하나 (완료 — 캡처로 픽셀 검증) |
-| R4 | `Camera`(ortho) + ViewProj 상수버퍼 | 월드 좌표가 화면에 정확히 매핑된다 |
+| ✅ R4 | `Camera`(ortho) + ViewProj 상수버퍼 | 월드 좌표가 화면에 정확히 매핑된다 (완료 — 단위 테스트 6개 + 캡처 픽셀 확인) |
 | R5 | `Renderable` + `RenderSystem` + `View<Transform, Renderable>` | ECS 엔티티들이 그려진다 |
 | **R6** | `I1`과 합류 | **내 키보드 입력이 서버 확정을 거쳐 화면 속 엔티티를 움직인다 ← 핵심 마일스톤** |
 | R7 | `PreviousTransform` + alpha 보간 | 50Hz인데 부드럽다 |
