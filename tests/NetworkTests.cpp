@@ -2304,3 +2304,48 @@ TEST_CASE(Network, DuplicateJoinEventDoesNotSpawnTwice) {
     }
     EXPECT_EQ(count, 1);
 }
+
+// 오래 떠 있던 서버에도 접속할 수 있다.
+//
+// ⚠️ 실제로 낸 버그다. RegisterClient 가 lastHeardFromTick 을 안 찍어서 0으로 남았고,
+//    같은 tick에 도는 DropTimedOutClients 가 `tick >= 0 + 타임아웃` 을 만족시켜
+//    **서버 가동 5초 뒤부터 신규 접속이 전부 즉시 쫓겨났다.**
+//    실행 테스트를 매번 새 서버로 해서 못 봤고, 다른 벤더 모델의 교차검증에서 잡혔다.
+//    타임아웃(250 tick)보다 훨씬 뒤에서 접속을 시작하는 것이 이 테스트의 요점이다.
+TEST_CASE(Network, ClientCanJoinLongRunningServer) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(20260826);
+    const Endpoint serverEp = Endpoint::Memory(930);
+    const Endpoint clientEp = Endpoint::Memory(931);
+
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientHost = net.CreateHost(clientEp, serverEp);
+
+    EF::World serverWorld = CreateLockstepServerWorld();
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint64_t tick = 1;
+
+    // 아무도 없는 상태로 타임아웃 길이를 훌쩍 넘겨 돌린다(= 오래 떠 있던 서버).
+    for (; tick <= 400; ++tick) {
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    // 이제 접속한다.
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = AttachClientWorld(clientWorld, clientHost);
+    for (; tick <= 500; ++tick) {
+        clientWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    EXPECT_TRUE(clientSync.HasSnapshot());
+    const uint32_t clientId = clientWorld.GetResource<EF::NetworkManager>().LocalClientId();
+    EXPECT_TRUE(clientId != 0);
+    EXPECT_TRUE(serverWorld.GetResource<EF::NetworkManager>().FindClient(clientId) != nullptr);
+    EXPECT_TRUE(ProbePlayer(serverWorld, clientId).found);
+    EXPECT_TRUE(ProbePlayer(clientWorld, clientId).found);
+}

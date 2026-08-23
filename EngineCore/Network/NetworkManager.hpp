@@ -139,9 +139,16 @@ namespace EF {
         void MarkClientHeardFrom(const Network::Endpoint& endpoint, uint64_t tick);
         NetworkClientState& GetOrCreateClient(uint32_t clientId);
         [[nodiscard]] const NetworkClientState* FindClient(uint32_t clientId) const;
+        /// @brief 클라이언트를 등록한다. `heardAtTick` 은 **반드시 현재 tick을 준다.**
+        ///
+        /// ⚠️ 기본값 0으로 두면 안 된다. 등록 직후 DropTimedOutClients 가 같은 tick에
+        ///    돌면서 `tick >= 0 + 타임아웃` 을 만족해버려, **오래 떠 있던 서버에는
+        ///    아무도 접속하지 못한다.** 실제로 이 버그를 냈다 — 서버를 매번 새로 띄워
+        ///    테스트해서 5초 미만에서만 확인했고, 교차검증에서 잡혔다.
         NetworkClientState& RegisterClient(uint32_t clientId,
                                            EntityId controlledEntity = kNullEntity,
-                                           const Network::Endpoint& endpoint = {});
+                                           const Network::Endpoint& endpoint = {},
+                                           uint64_t heardAtTick = 0);
         // endpoint로 인가된 clientId를 찾는다(스푸핑 방지). 없으면 0.
         [[nodiscard]] uint32_t ClientIdForEndpoint(const Network::Endpoint& endpoint) const;
         [[nodiscard]] const std::unordered_map<uint32_t, NetworkClientState>& Clients() const noexcept {

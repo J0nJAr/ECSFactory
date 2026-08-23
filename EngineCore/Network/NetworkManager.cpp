@@ -91,8 +91,13 @@ namespace EF {
     }
 
     NetworkClientState& NetworkManager::RegisterClient(uint32_t clientId, EntityId controlledEntity,
-                                                       const Network::Endpoint& endpoint) {
+                                                       const Network::Endpoint& endpoint,
+                                                       uint64_t heardAtTick) {
         NetworkClientState& state = GetOrCreateClient(clientId);
+
+        // 방금 Hello를 받았으니 지금이 마지막으로 들은 시각이다.
+        // 이걸 안 찍으면 0으로 남아 오래 떠 있던 서버가 신규 접속을 즉시 쫓아낸다.
+        state.lastHeardFromTick = heardAtTick;
         if (controlledEntity != kNullEntity) {
             state.controlledEntity = controlledEntity;
             state.hasControlledEntity = true;

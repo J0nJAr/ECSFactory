@@ -23,7 +23,7 @@
 | **렌더링** | 🟡 R0~R6 완료. 실제 키 입력이 lockstep을 거쳐 화면 속 엔티티를 움직인다. R7(보간)만 남음 |
 | **UI** | 🟡 U3(앵커 레이아웃) 완료 — 순수 함수라 단위 테스트로 덮임. 그릴 수단(U1 드로우 목록·U2 폰트)이 없어 화면엔 안 나온다 |
 | **실제 키보드 입력 배선** | ✅ I1 완료 (WASD·방향키 → `InputCommand`). 마우스 조준은 변환 계층만 있고 시뮬이 아직 소비하지 않는다 |
-| **결정론 스폰/디스폰** | 🟡 N1(스냅샷에 EntityManager 상태 포함) 완료, N2(확정 입력에서만 스폰) 남음 — §6 |
+| **결정론 스폰/디스폰** | ✅ N1·N2 완료. 접속·해제가 확정 이벤트로 흐르고, 접속해도 기존 클라가 리싱크하지 않는다 — §6 |
 | **공장 게임 자체** | ❌ 설계도 코드도 없음 |
 | 예측/롤백 | ❌ (의도적 후순위) |
 
@@ -110,7 +110,7 @@ flowchart TB
     end
 
     subgraph N["트랙 N — 결정론 스폰"]
-        N1["✅ N1 EntityManager 상태 복원"] --> N2["N2 확정 입력에서만 스폰"]
+        N1["✅ N1 EntityManager 상태 복원"] --> N2["✅ N2 확정 입력에서만 스폰"]
     end
 
     subgraph G["트랙 G — 공장 게임플레이"]
@@ -298,7 +298,7 @@ UI를 렌더링 중간에 끼우는 이유: **UI는 카메라가 필요 없어�
 
 ---
 
-## 6. 트랙 N — 결정론 스폰 ⚠️ 여기 함정이 있다
+## 6. 트랙 N — 결정론 스폰 ✅ N1·N2 완료
 
 공장 게임에서 **건물을 짓는다 = 엔티티를 만든다**. 그래서 이 트랙은 `G` 전체의 전제조건이다.
 
@@ -373,16 +373,36 @@ World::ApplySnapshot()      → Registry newRegistry;   ← 완전히 새 Regist
 
 **완료 기준:** 확정 입력의 버튼 비트로 엔티티를 스폰하는 테스트에서, 서버와 N개 클라의 `ComputeHash()`가 계속 일치한다(손실 링크 위에서도).
 
-#### ⚠️ 현재 상태 — Hello 스폰이 이제 해시를 실제로 바꾼다
+#### ✅ 어떻게 풀었나 — 사건을 확정해서 흘려보낸다
 
-접속한 클라이언트에게 조종할 대상을 주기 위해, `NetworkSyncSystem`의 `Hello` 처리가 만드는 엔티티에 `Transform` + `PlayerControl{clientId}`를 붙였다(`SpawnPlayerEntity`). 스폰 위치는 `clientId`에서만 유도한다 — x = (clientId − 1) × 6, y = z = 0, 값은 전부 `Fixed64::FromInt`. 난수도 접속 시각도 쓰지 않으므로 스냅샷을 받은 클라이언트가 같은 값을 그대로 재현한다.
+**핵심 통찰:** 스폰은 복제할 필요가 없지만, **"누가 접속했다"는 입력이 아니다.** 도착 시각이 peer마다 다르고, 클라이언트는 다른 클라의 접속을 스스로 알 수 없다. 그래서 서버가 그 비결정론적 사건을 **tick 하나에 못 박아 확정한다.** 그 뒤로는 확정 입력과 똑같이 흐른다 — 모든 peer가 같은 tick에 같은 순서로 적용하므로 각자 만든 엔티티의 `EntityId`까지 일치한다.
 
-이 변경으로 N2의 구멍이 **더 크게 드러났다.** 예전에는 컴포넌트가 하나도 없는 빈 엔티티라 `ComputeHash()`에 아무 영향이 없었지만(엔티티 상태는 일부러 해시에서 빼 두었으므로), 이제는 새 클라이언트가 접속할 때마다 서버 월드의 컴포넌트 풀이 즉시 바뀐다. 귀결:
+**스폰 자체를 복제하는 게 아니라 스폰을 일으키는 사건을 복제한다.**
 
-- 이미 접속해 있던 클라이언트는 다음 `TickHash`에서 불일치를 보고 `ResyncRequest` → 전체 스냅샷으로 뒤늦게 따라잡는다. **접속 한 번마다 기존 전원이 리싱크한다.** 결국 수렴하므로 테스트는 통과하지만, 설계대로 동작하는 것은 아니다.
-- `CreateEntity()`가 서버에서만 호출되므로 `EntityManager` 할당 상태도 계속 갈라진다. 리싱크가 덮어 주는 구간 밖에서는 언제든 디싱크다.
+| 무엇 | 어디 |
+|---|---|
+| `SessionEvent{Join / Leave, clientId}` | [InputCommand.hpp](../../EngineCore/Network/InputCommand.hpp) |
+| `InputFrame`이 `events`를 함께 나른다 | 같은 파일. 와이어 순서도 events → inputs |
+| `ApplySessionEvents` (서버·클라 공용) | [PlayerMovement.cpp](../../EngineCore/Gameplay/PlayerMovement.cpp) |
+| 예약: `QueueSessionEvent(tick+1, …)` | `Hello` 처리, 타임아웃 처리 |
+| 확정: `ConfirmSessionEvents(tick)` — clientId 정렬 | [NetworkManager.cpp](../../EngineCore/Network/NetworkManager.cpp) |
 
-즉 N2는 이제 "나중에 하면 좋은 정리"가 아니라 **접속마다 대가를 치르고 있는 빚**이다. 코드 자리의 경고는 `EngineCore/Network/NetworkSyncSystem.cpp`의 `SpawnPlayerEntity` 헤더 주석에 있다.
+**지켜야 하는 것 셋:**
+
+1. **적용 순서는 events → inputs.** 같은 tick에 접속과 입력이 함께 오면 엔티티가 먼저 있어야 입력이 갈 곳이 생긴다. 뒤집으면 접속 첫 tick의 입력이 조용히 사라지고, 그건 peer마다 다르게 나타나지 않으므로 **디싱크로도 안 잡힌다.**
+2. **정렬은 확정하는 쪽에서 한 번만.** 이 순서가 곧 엔티티 생성 순서이고 그게 `EntityId`를 정한다. 적용하는 쪽에서 또 정렬하면 한쪽만 바뀌었을 때 조용히 어긋난다.
+3. **중복 Join은 무시한다.** 스냅샷에 이미 담겨 온 뒤 같은 tick의 프레임을 또 받는 경로가 실제로 있다. 엔티티가 둘이 되면 역시 해시로 안 잡힌다.
+
+**서버 장부는 월드 상태가 아니다.** `clientId` 발급, endpoint 등록, 신뢰성 채널은 확정 경로 밖에서 다뤄도 된다 — 시뮬레이션에 영향을 주지 않기 때문이다. 확정 경로로 옮겨야 하는 것은 **월드를 바꾸는 일**뿐이다. 이 구분이 이 작업의 실질이었다.
+
+**완료 확인:** `Network.SecondClientJoinDoesNotResyncTheFirst` — 실제 `Hello` 경로로 두 번째 클라를 붙이고, 그동안 첫 클라가 스냅샷을 **한 장도** 안 받는지 본다. 옛 동작으로 되돌리면 해시 불일치에서 실패한다.
+
+> ⚠️ **이 작업에서 낸 버그 하나를 기록해 둔다.** 타임아웃 정리를 붙이면서 `RegisterClient`가 `lastHeardFromTick`을 안 찍어 0으로 남았고, 같은 tick에 도는 정리 루프가 `tick >= 0 + 타임아웃`을 만족시켜 **서버 가동 5초 뒤부터 신규 접속이 전부 즉시 쫓겨났다.** 실행 검증을 매번 새 서버로 해서 못 봤고, 다른 벤더 모델의 교차검증에서 잡혔다. `Network.ClientCanJoinLongRunningServer`가 이걸 지킨다.
+
+#### 남은 것
+
+- **`ComputeHash()`에 `EntityManager` 상태 넣기.** N2가 끝났으므로 이제 넣을 수 있다. 넣으면 엔티티 할당이 갈라지는 것을 바로 잡는다.
+- **`Dormant`(파괴 대신 얼리기).** 지금은 나갔다 들어오면 새 `clientId` + 새 캐릭터다. 세션 / 영속 플레이어 / 캐릭터를 분리하는 [§8](deterministic-input-lockstep.md) 작업과 함께 한다.
 
 ---
 

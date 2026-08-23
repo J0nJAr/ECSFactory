@@ -152,11 +152,12 @@ namespace EF {
     //  2. **월드.** 조종자가 없는 플레이어 엔티티가 영원히 남는다. UDP로 재접속하면
     //     endpoint가 달라져 새 clientId + 새 스폰이 되므로 유령이 쌓인다.
     //
-    // ⚠️ 엔티티 파괴가 **확정 입력 경로 밖**에서 일어난다. 스폰과 같은 빚이다(roadmap N2).
-    //    지금은 스폰과 같은 방식으로 수습된다 — 서버 월드가 바뀌면 클라 해시가 어긋나고,
-    //    TickHash 비교가 그걸 잡아 resync로 덮는다. 즉 **접속 해제 한 번에 남은 전원이
-    //    스냅샷 한 번씩을 받는다.** 옳은 방향은 해제를 확정 입력 경로의 이벤트로 만드는 것이고,
-    //    설계 문서 §8의 Dormant(파괴 대신 얼리기)와 함께 처리해야 한다.
+    // 📌 엔티티 파괴는 여기서 하지 않는다. Leave 이벤트를 다음 tick에 예약해서
+    //    서버와 모든 클라가 **각자 같은 tick에** 같은 엔티티를 파괴한다(N2).
+    //    여기서 정리하는 것은 월드 상태가 아닌 것들뿐이다 — 장부와 신뢰성 채널.
+    //
+    //    아직 남은 것: 설계 문서 §8의 Dormant(파괴 대신 얼리기). 지금은 나갔다 들어오면
+    //    새 clientId + 새 캐릭터가 된다. 영속 플레이어 정체성이 생길 때 함께 처리한다.
     void NetworkSyncSystem::DropTimedOutClients(World& world, NetworkManager& network, uint64_t tick) {
         // 엔티티 파괴는 확정 이벤트가 하므로 여기서 월드를 직접 만지지 않는다.
         // 인자는 시그니처 일관성(다른 Update* 계열과 같은 모양)을 위해 남긴다.
@@ -456,7 +457,7 @@ namespace EF {
                     //
                     // 대신 다음 tick에 확정될 Join 이벤트를 예약한다. 그러면 서버와 모든
                     // 클라이언트가 **각자** 같은 tick에 같은 엔티티를 만든다.
-                    network.RegisterClient(clientId, kNullEntity, from);
+                    network.RegisterClient(clientId, kNullEntity, from, tick);
                     network.QueueSessionEvent(tick + 1, SessionEvent{
                         .kind = SessionEvent::Kind::Join,
                         .clientId = clientId
