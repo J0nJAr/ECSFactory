@@ -3,6 +3,7 @@ add_library(EngineCore STATIC)
 target_sources(EngineCore
     PRIVATE
         Base/GameEngine.cpp
+        Base/InputManager.cpp
         ECS/EntityCommandBuffer.cpp
         Gameplay/InputMapping.cpp
         Gameplay/PlayerMovement.cpp

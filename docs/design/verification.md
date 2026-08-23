@@ -20,6 +20,8 @@
 5. 렌더/UI 타입(`Float2`, `Float3`, `Color`, `Rect`, `Mat4`, 앵커 레이아웃)이 시뮬레이션 코드에서 쓰이지 않는다.
 6. 사람이 읽는 새 문서·주석·커밋 메시지가 한국어다.
 7. 클래스와 자명하지 않은 함수에 헤더 주석이 있고, 그 주석이 코드의 현재 동작과 일치한다. 동작을 바꾸면서 주석을 안 고친 곳이 없다.
+8. `EngineCore/` 아래의 **헤더**가 `<windows.h>` / DX 헤더를 include하지 않는다. `EngineCore`는 dedicated server도 링크하므로, 헤더 하나가 매크로 오염과 include 순서 의존을 그 헤더를 쓰는 모든 번역 단위로 퍼뜨린다. 플랫폼 헤더는 `.cpp` 안에 가둔다(`Platform/Win32Window.hpp`, `Render/Dx11/Dx11Renderer.hpp`, `Base/InputManager.hpp`). 자동 검사: `tools/ci/check-headers-no-windows.sh`.
+   - 아직 남은 예외: `Network/UDPConnection.hpp`가 헤더에서 `<winsock2.h>`를 끌어온다. 같은 종류의 문제이고 아직 안 고쳤다 — 그래서 검사의 금지 목록에 winsock이 없다.
 
 ### R0 — EngineRender 타깃 분리와 렌더 인터페이스 골격
 

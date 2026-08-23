@@ -62,3 +62,8 @@ jobs:
       # 빌드가 되는지가 아니라 설계 규칙이 지켜지는지를 본다.
       - name: 설계 규칙 — 서버에 렌더 계층이 없어야 한다
         run: bash tools/ci/check-server-no-dx11.sh out/build/${{ matrix.preset }}
+
+      # EngineCore는 dedicated server도 링크한다. 헤더에서 windows.h를 끌어오면
+      # 그 오염이 서버 빌드까지 번지고, include 순서에 의존하는 코드가 생긴다.
+      - name: 설계 규칙 — EngineCore 헤더가 windows.h를 노출하지 않아야 한다
+        run: bash tools/ci/check-headers-no-windows.sh
