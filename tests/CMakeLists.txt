@@ -99,3 +99,10 @@ add_test(NAME InputMapping.PitchIsClampedToTheConfiguredLimit COMMAND EngineCore
 add_test(NAME InputMapping.YawWrapsIntoCanonicalRange COMMAND EngineCoreTests InputMapping.YawWrapsIntoCanonicalRange)
 add_test(NAME InputMapping.NonFiniteAndImplausibleInputsAreIgnored COMMAND EngineCoreTests InputMapping.NonFiniteAndImplausibleInputsAreIgnored)
 add_test(NAME InputMapping.MakeInputCommandCarriesOnlyFixedPointAim COMMAND EngineCoreTests InputMapping.MakeInputCommandCarriesOnlyFixedPointAim)
+
+# 디싱크를 일부러 주입해서 탐지·복구 경로(TickHash → ResyncRequest → WorldSnapshot)를 확인한다.
+# 정상 세션에서는 절대 밟히지 않는 경로라 테스트가 없으면 조용히 썩는다.
+add_test(NAME Network.SkippedConfirmedInputFrameIsDetectedByTickHash COMMAND EngineCoreTests Network.SkippedConfirmedInputFrameIsDetectedByTickHash)
+add_test(NAME Network.DesyncedClientRecoversThroughResyncSnapshot COMMAND EngineCoreTests Network.DesyncedClientRecoversThroughResyncSnapshot)
+add_test(NAME Network.RecoveredClientKeepsMatchingServerAfterResync COMMAND EngineCoreTests Network.RecoveredClientKeepsMatchingServerAfterResync)
+add_test(NAME Network.NoInjectionKeepsCleanSessionFreeOfHashMismatch COMMAND EngineCoreTests Network.NoInjectionKeepsCleanSessionFreeOfHashMismatch)

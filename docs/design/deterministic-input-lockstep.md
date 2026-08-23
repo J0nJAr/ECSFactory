@@ -142,6 +142,12 @@
 - `07` 채널표와 설명은 `InputFrame → Reliable` M2 구현 완료 상태를 반영함.
 - 이 설계 문서(본 파일)도 구현 완료분에 맞춰 갱신.
 
+### M8 — 디싱크 탐지·복구 경로 테스트 ✅ 완료
+- **동기**: `TickHash` 불일치 → `ResyncRequest` → `WorldSnapshot` 복구 경로는 정상 세션에서 한 번도 실행되지 않는다. M6의 수렴 테스트들은 전부 "디싱크가 안 난다"를 확인할 뿐, "디싱크가 났을 때 복구된다"는 아무도 확인하지 않았다.
+- **주입 수단**: `NetworkSyncSystem::DebugSkipNextConfirmedInputFrameOnce()` — 다음 확정 `InputFrame` **하나**를 받았지만 적용하지 않고 `clientSimTick`만 진행시킨다. 기본 꺼짐 + 1회성 자동 해제. 고른 이유와 버린 대안(`#ifdef` 컴파일타임 훅, 상속 오버라이드, 테스트가 컴포넌트 값 직접 덮기)은 그 함수의 헤더 주석에 있다.
+- **테스트**: `Network.SkippedConfirmedInputFrameIsDetectedByTickHash`(탐지), `Network.DesyncedClientRecoversThroughResyncSnapshot`(복구), `Network.RecoveredClientKeepsMatchingServerAfterResync`(복구 이후 지속), `Network.NoInjectionKeepsCleanSessionFreeOfHashMismatch`(대조군).
+- 이 작업에서 드러난 결함은 §7의 "디싱크 복구 경로 — 실측과 알려진 결함"에 적었다. **고치지 않았다.**
+
 ---
 
 ## 5. 코드 리뷰 findings → 어느 마일스톤이 고치나
@@ -181,6 +187,43 @@
 - **deque→slot 교체는 기존 입력 테스트를 깬다** — 의도된 교체(비결정론 API 제거). 놀라지 말고 슬롯/확정 기준으로 다시 쓸 것.
 - **host/single vs dedicated:** 전자는 한 `GameEngine`·공유 tick·즉시 메모리 전달 → 같은 tick에 서버 확정→클라 적용까지 가능(월드 업데이트 순서: 서버 월드가 먼저 등록됨). 후자는 별도 클럭·RTT 지연.
 - **클라 시뮬은 프레임 구동**(`clientSimTick`)이라 엔진 `FixedUpdate`의 tick 번호와 다를 수 있다 — 클라 이동을 자동 실행 `ISystem`으로 두지 말고 sync 시스템이 확정 프레임으로 명시 구동(순서 통제).
+
+### 디싱크 복구 경로 — 실측과 알려진 결함
+
+M8에서 디싱크를 일부러 주입해 복구 전 과정을 굴려 본 결과다. **아래 결함은 M8 범위 밖이라 고치지 않았다.** 여기 적힌 숫자는 무손실 `MemoryConnection`에 서버·클라 각각 `FixedUpdate` 한 번씩(클라 → 서버 순), 50Hz 기준 실측이다.
+
+**측정값**
+
+| 구간 | 실측 |
+|---|---|
+| 디싱크 발생 → `HasHashMismatch()` | **0 tick**(주입과 같은 tick). 서버가 그 tick의 `TickHash`를 이미 보내 둔 상태라 다음 클라 펌프에서 바로 잡힌다. |
+| 디싱크 발생 → 해시 재일치 | **3 tick**(≈60ms). 단, **월드가 정지한 뒤에**. |
+| 그 사이 클라가 적용한 `WorldSnapshot` | **3개** — 한 번이 아니다. 이유는 아래 (1). |
+
+**(1) ⚠️ 스냅샷의 tick 라벨이 한 칸 앞서 있다 — resync마다 확정 입력 1프레임을 잃는다.**
+
+`NetworkSyncSystem::UpdateServer`의 순서는 `수신 처리 → ConfirmInputs(tick) 적용 → TickHash(tick) 방송`이다. `ResyncRequest`는 **수신 처리 단계**에서 답하므로, `world.CreateSnapshot(tick)`이 담는 내용은 *tick의 입력을 적용하기 전* 상태 = 실제로는 `tick - 1`까지의 상태다. 그런데 라벨은 `tick`으로 붙는다.
+
+클라는 그걸 받아 `m_clientSimTick = snapshot.tick`으로 놓고, 같은 배치에 온 `InputFrame(tick)`을 `frame.tick > m_clientSimTick` 조건에서 버린다. 귀결:
+
+- **매 resync가 확정 입력 정확히 한 프레임을 조용히 삼킨다.**
+- 클라의 `m_localHashByTick[tick]`은 서버의 `TickHash(tick)`보다 한 tick 낡아서 **복구 직후 다시 불일치**가 뜬다.
+- 월드가 매 tick 계속 바뀌는 동안에는 이 과정이 끝나지 않는다 — **tick마다 `ResyncRequest` → tick마다 전체 스냅샷의 무한 루프**. 실측으로 확인했다: 플레이어가 계속 이동하는 상태에서 디싱크를 주입하고 200 tick(4초)을 굴리면 **스냅샷을 정확히 200개**(매 tick 하나) 받으면서도 불일치가 유지되고, 클라 위치는 서버보다 계속 2유닛 뒤처져 있었다. 이동을 멈추자(= 월드가 정지하자) 그제서야 3 tick 만에 수렴했다.
+- 조인 핸드셰이크도 **같은 off-by-one을 밟는다.** 지금은 접속 순간에 아무도 움직이지 않아 삼켜진 프레임이 no-op이라 드러나지 않을 뿐이다.
+
+고칠 방향(미착수): 스냅샷을 `ConfirmInputs` **적용 후**에 뜨거나, 라벨을 `tick - 1`로 정직하게 붙이고 클라가 `InputFrame(tick)`을 버리지 않게 한다. 어느 쪽이든 "스냅샷 라벨 T = T의 입력까지 적용된 상태"라는 정의를 코드 한 곳에 못 박고 양쪽이 그걸 따르게 해야 한다.
+
+**(2) ⚠️ `ResyncRequest`에 rate limit이 없다.**
+
+`VerifyPendingTickHashes`는 불일치하는 **pending tick마다** `ResyncRequest`를 보내고, 서버는 요청마다 **전체 월드 스냅샷**을 reliable로 답한다. "이미 요청했다" 플래그도, 백오프도 없다. RTT가 크거나 (1) 때문에 루프에 빠지면 **스냅샷 폭풍**이 된다 — 월드가 커질수록(공장 게임이면 커진다) 위험이 커진다. 최소한 "in-flight resync 하나만" 같은 억제가 필요하다.
+
+**(3) 복구되는 동안 화면은 틀린 상태를 그리다 순간이동한다.**
+
+예측·롤백·보간이 없으므로, 디싱크가 난 클라는 탐지 전까지 **틀린 월드를 그대로 렌더**하고, 스냅샷이 도착하면 그 프레임에 pop 한다. 위 실측(3 tick ≈ 60ms)이면 눈에 잘 안 띄지만, (1)의 루프에 빠지면 "매 프레임 순간이동하며 계속 뒤처지는" 화면이 된다. 렌더 보간(R7)은 이 pop을 부드럽게 할 뿐 원인을 없애지 못한다.
+
+**(4) 해시를 직접 비교할 때의 함정.**
+
+클라는 서버보다 항상 최소 한 tick 뒤처지므로, `clientWorld.ComputeHash() == serverWorld.ComputeHash()`는 **월드가 정지해 있을 때만** 참이다. 정상 동작을 확인하려면 raw 해시가 아니라 tick을 맞춰 비교하는 `HasHashMismatch()`를 봐야 한다. 새 테스트를 쓸 때 이걸 헷갈리면 멀쩡한 코드가 깨진 것처럼 보인다.
 
 ---
 

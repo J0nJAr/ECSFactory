@@ -82,6 +82,50 @@ namespace EF {
 
         void QueueLocalInput(const InputCommand& command);
 
+        /**
+         * ⚠️ **디버그 전용 — 디싱크를 일부러 만든다. 게임 코드에서 부르지 말 것.**
+         *
+         * 다음에 적용될 확정 InputFrame **한 개**를 "받았지만 적용하지 않고" 넘긴다.
+         * tick 번호(`clientSimTick`)는 정상적으로 진행시킨다 — 여기서 멈추면 디싱크가
+         * 아니라 그냥 뒤처진 클라이언트가 되어, 검증하려는 상황이 재현되지 않는다.
+         *
+         * **왜 이런 게 필요한가.** `TickHash` 불일치 → `ResyncRequest` → `WorldSnapshot`
+         * 복구 경로는 정상 세션에서 절대 밟히지 않는다. 밟히지 않는 코드는 조용히 썩고,
+         * 정작 필요한 날(실전 디싱크) 처음 실행된다. 그래서 테스트가 디싱크를 만들어낼
+         * 수 있어야 한다.
+         *
+         * **왜 하필 "확정 프레임 하나 건너뛰기"인가.** 현실의 lockstep 디싱크는 대부분
+         * "한쪽이 확정 입력을 놓쳤거나 다르게 적용했다"이다. 이 주입이 만드는 클라 월드는
+         * 여전히 *시뮬레이션이 만들어낼 수 있는* 상태이면서 서버와 한 스텝 어긋나 있고,
+         * 그 뒤로도 어긋난 채 정상 진행한다. 컴포넌트 값을 아무 숫자로 덮는 것보다 실제
+         * 버그에 가깝다.
+         *
+         * **버린 대안:**
+         *  - `#ifdef EF_DEBUG_DESYNC` 컴파일타임 훅 — 테스트가 특수 빌드에서만 돌게 되고,
+         *    CI의 Release 빌드에서는 복구 경로가 검증되지 않는다. 확인하고 싶은 게 정확히
+         *    "평소 빌드에서도 이 경로가 살아 있다"인데 그걸 놓친다.
+         *  - 테스트에서 이 클래스를 상속해 적용 루프를 오버라이드 — 적용 경로가 private·비가상
+         *    이라 가상 함수를 새로 뚫어야 한다. 훅 하나보다 프로덕션 표면을 더 늘린다.
+         *  - 테스트가 클라 월드의 컴포넌트 값을 직접 덮기 — 이미
+         *    `Network.SyncSystemRequestsAndAppliesResyncOnHashMismatch`가 그렇게 하고 있고
+         *    그건 그대로 둔다. 다만 "값이 튄" 월드는 시뮬레이션이 도달할 수 없는 상태라,
+         *    가장 흔한 형태인 "입력 하나를 놓친 디싱크"를 대신하지 못한다.
+         *
+         * **실수로 켜지지 않게 하는 장치:**
+         *  - 기본값이 꺼짐이고, 이 함수를 명시적으로 부르지 않으면 절대 켜지지 않는다.
+         *  - 한 번 발동하면 스스로 꺼진다(1회성). 켜 둔 걸 잊어서 세션 전체가 망가지는
+         *    사고가 나지 않는다.
+         *  - 클라이언트 모드에서만 의미가 있다(확정 프레임 적용은 클라 쪽 경로다).
+         *    서버 모드에서 불러도 아무 일도 일어나지 않는다.
+         *
+         * 주의: 건너뛴 프레임의 확정 입력이 **월드를 실제로 바꾸지 않으면**(예: buttonMask가
+         * 전부 0) 디싱크가 생기지 않는다. 이 함수를 쓰는 테스트는 주입 직후 해시가 실제로
+         * 갈라졌는지를 함께 단언해야 한다. 아니면 "아무 일도 안 일어나서" 통과한다.
+         */
+        void DebugSkipNextConfirmedInputFrameOnce() noexcept {
+            m_debugSkipNextConfirmedFrame = true;
+        }
+
     private:
         void UpdateClient(World& world, NetworkManager& network);
         void UpdateServer(World& world, NetworkManager& network, uint64_t tick);
@@ -109,6 +153,10 @@ namespace EF {
         bool m_hasSnapshot = false;
         bool m_hasHashMismatch = false;
         bool m_hasServerTickEstimate = false;
+
+        // 디버그 주입 플래그. DebugSkipNextConfirmedInputFrameOnce()만이 이걸 켠다.
+        // 켜진 상태로 남지 않는다 — 다음 확정 프레임 하나를 건너뛰면서 스스로 꺼진다.
+        bool m_debugSkipNextConfirmedFrame = false;
         uint64_t m_lastSnapshotTick = 0;
         uint64_t m_clientSimTick = 0;
         uint64_t m_serverTickEstimate = 0;

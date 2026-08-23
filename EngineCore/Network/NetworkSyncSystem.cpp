@@ -210,7 +210,15 @@ namespace EF {
                 break;
             }
 
-            ApplyConfirmedInputs(world, frameIt->second);
+            if (m_debugSkipNextConfirmedFrame) {
+                // ⚠️ 디버그 주입 경로다(DebugSkipNextConfirmedInputFrameOnce).
+                // 이 프레임을 "받았지만 적용하지 않는다". tick은 아래에서 정상 진행시킨다 —
+                // 여기서 멈추면 디싱크가 아니라 지연된 클라이언트가 되어 버린다.
+                // 1회성이라 여기서 스스로 꺼진다.
+                m_debugSkipNextConfirmedFrame = false;
+            } else {
+                ApplyConfirmedInputs(world, frameIt->second);
+            }
             m_clientSimTick = nextTick;
             m_frameBuffer.erase(frameIt);
 
