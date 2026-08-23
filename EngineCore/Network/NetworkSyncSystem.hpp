@@ -64,6 +64,14 @@ namespace EF {
             return m_lastSnapshotTick;
         }
 
+        // 지금까지 실제로 적용한 스냅샷 수.
+        //
+        // LastSnapshotTick()의 변화로 세면 **같은 서버 tick에 만들어진 스냅샷 여러 개가
+        // 한 건으로 뭉개진다.** resync 폭주를 재려면 그 구분이 정확히 필요해서 따로 센다.
+        [[nodiscard]] uint64_t AppliedSnapshotCount() const noexcept {
+            return m_appliedSnapshotCount;
+        }
+
         [[nodiscard]] bool HasHashMismatch() const noexcept {
             return m_hasHashMismatch;
         }
@@ -163,6 +171,7 @@ namespace EF {
         // 요청마다 월드 전체 스냅샷을 reliable로 답해서 대역폭이 무너진다.
         // 스냅샷을 적용하면 내려간다(VerifyPendingTickHashes / WorldSnapshot 처리 참조).
         bool m_resyncRequestInFlight = false;
+        uint64_t m_appliedSnapshotCount = 0;
         uint64_t m_lastSnapshotTick = 0;
         uint64_t m_clientSimTick = 0;
         uint64_t m_serverTickEstimate = 0;

@@ -2048,18 +2048,15 @@ TEST_CASE(Network, ResyncRequestDoesNotStormOnSingleDesync) {
     tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 1);
     EXPECT_TRUE(clientSync.HasHashMismatch());
 
-    // 복구까지 돌리면서 스냅샷 tick이 몇 번 바뀌는지 센다.
-    // (LastSnapshotTick 이 바뀔 때마다 새 스냅샷을 적용한 것이다.)
-    uint64_t appliedSnapshots = 0;
-    uint64_t lastSeen = clientSync.LastSnapshotTick();
+    // ⚠️ LastSnapshotTick 의 변화로 세면 안 된다. 같은 서버 tick 에 만들어진 스냅샷
+    //    여러 개가 같은 라벨을 달고 오므로 전부 한 건으로 뭉개져서, 정작 재려는
+    //    "중복 요청"이 보이지 않는다. 실제 적용 횟수를 센다.
+    const uint64_t appliedBefore = clientSync.AppliedSnapshotCount();
     for (uint64_t i = 0; i < 40; ++i) {
         clientSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
         tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 1);
-        if (clientSync.LastSnapshotTick() != lastSeen) {
-            lastSeen = clientSync.LastSnapshotTick();
-            ++appliedSnapshots;
-        }
     }
+    const uint64_t appliedSnapshots = clientSync.AppliedSnapshotCount() - appliedBefore;
 
     // 한 번의 디싱크에 스냅샷 하나면 충분하다. 여유를 조금 두되(경합으로 하나 더 올 수 있다)
     // 예전처럼 매 tick 하나씩 오는 상태는 확실히 잡는다.

@@ -302,7 +302,15 @@ namespace EF {
                 //    불일치를 계속 "감지"하되 요청은 보내지 않는다 — 감지를 멈추면
                 //    HasHashMismatch()가 깜빡여서 디버그 표시가 쓸모없어진다.
                 if (!m_resyncRequestInFlight) {
-                    m_resyncRequestInFlight = network.SendResyncRequest(tick, localHash, remoteHash);
+                    // ⚠️ 반환값을 플래그에 대입하면 안 된다. NetworkManager::SendPacket 은
+                    //    레코드를 신뢰성 채널에 **먼저 큐에 넣고** flush 결과를 돌려준다.
+                    //    즉 false는 "안 보냈다"가 아니라 "지금 소켓 전송이 실패했다"이고,
+                    //    그 요청은 이미 큐에 있어서 재전송으로 결국 나간다.
+                    //    false를 보고 다시 보내면 요청이 중복 적재되고, 링크가 회복되는 순간
+                    //    그게 한꺼번에 나가 서버가 스냅샷을 그 수만큼 답한다 — 막으려던
+                    //    폭주가 오히려 링크가 나쁠 때 터진다.
+                    network.SendResyncRequest(tick, localHash, remoteHash);
+                    m_resyncRequestInFlight = true;
                 }
             }
             it = m_pendingTickHashes.erase(it);
@@ -343,6 +351,7 @@ namespace EF {
 
                 // 요청한 스냅샷이 도착했다. 다음 불일치에는 다시 요청할 수 있다.
                 m_resyncRequestInFlight = false;
+                ++m_appliedSnapshotCount;
                 m_lastSnapshotTick = snapshot.tick;
                 m_clientSimTick = snapshot.tick;
                 m_serverTickEstimate = snapshot.tick;
