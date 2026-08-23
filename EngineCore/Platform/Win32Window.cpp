@@ -45,6 +45,10 @@ namespace EF {
         // A계열(CreateWindowExA)을 쓰면 변환이 필요 없어 보이지만, 그건 시스템 ANSI
         // 코드페이지로 해석되어 한국어 제목이 깨진다. 이 저장소는 한국어 문자열을 쓰므로
         // W계열 + 명시적 UTF-8 변환이 맞다.
+        //
+        // 📌 제목이 창으로 들어가는 경로는 둘이다 — 생성 시(Create)와 실행 중 변경(SetTitle).
+        //    둘 다 이 함수 하나만 거친다. 각자 변환을 들고 있으면 언젠가 한쪽만 고쳐져서
+        //    "처음 제목은 멀쩡한데 바꾸면 깨진다" 같은 버그가 난다. 변환 지점은 여기 하나다.
         std::wstring Utf8ToWide(const char* utf8) {
             if (utf8 == nullptr || *utf8 == '\0') {
                 return std::wstring();
@@ -320,6 +324,31 @@ namespace EF {
         }
 
         m_impl->closed = true;
+    }
+
+    void Win32Window::SetTitle(const char* title) {
+        // 창이 없으면 조용히 무시한다. Destroy() 뒤나 Create() 전에 불릴 수 있는데,
+        // 그때마다 호출부가 창 수명을 검사하게 만들 이유가 없다(Destroy()의 멱등성과 같은 태도).
+        // 실패를 알리지도 않는다 — 제목은 디버그 표시이지 결과를 받아써야 하는 연산이 아니다.
+        if (m_impl->hwnd == nullptr) {
+            return;
+        }
+
+        // 변환은 Create()가 쓰는 헬퍼 그대로다. SetWindowTextA를 부르면 변환이 사라져
+        // 간단해 보이지만, 그 경로는 문자열을 시스템 ANSI 코드페이지로 해석하므로 한국어가
+        // 깨진다. 이 파일이 W계열만 쓰기로 한 이유와 같다(파일 상단 UNICODE 매크로 주석).
+        const std::wstring wideTitle = Utf8ToWide(title);
+
+        // ⚠️ 이건 창에 WM_SETTEXT를 "동기적으로" 보내는 호출이다(SendMessage 계열).
+        //    같은 문자열이어도 메시지 왕복과 논클라이언트 영역 다시 그리기 비용을 그대로
+        //    치른다. 그래서 "바뀌었을 때만 부른다"는 판단은 호출부 몫으로 남겼다 —
+        //    여기서 직전 제목을 캐싱해 걸러낼 수도 있었지만, 그러면 창이 자기가 모르는
+        //    이유로 제목이 바뀌었을 때(다른 코드가 SetWindowText를 직접 부르는 경우)
+        //    캐시가 진실과 어긋난다. 창은 시키는 대로 하고, 빈도는 부르는 쪽이 정한다.
+        //
+        // 반환값은 보지 않는다. 실패 경로가 사실상 "핸들이 방금 죽었다" 하나뿐이고,
+        // 그건 위 null 검사와 창 파괴 사이의 경쟁일 뿐이라 로그를 남길 값어치가 없다.
+        SetWindowTextW(m_impl->hwnd, wideTitle.c_str());
     }
 
     bool Win32Window::PumpMessages() {
