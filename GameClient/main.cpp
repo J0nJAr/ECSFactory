@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -223,6 +224,8 @@ protected:
                 renderer.CaptureBackBuffer(m_capturePath.c_str());
             }
 
+            UpdateDebugTitle(window);
+
             // 프레임을 닫는 것은 앱의 몫이다. RenderSystem이 Present까지 하면
             // 나중에 UI 패스가 월드 위에 낄 자리가 없어진다.
             renderer.EndFrame();
@@ -238,6 +241,69 @@ protected:
         renderer.Shutdown();
         window.Destroy();
         return 0;
+    }
+
+private:
+    // 창 제목에 결정론 상태를 찍는다.
+    //
+    // 왜 창 제목인가: 클라이언트 둘을 나란히 띄워 놓고 **같은 tick에서 해시가 같은지**를
+    // 보는 것이 이 엔진의 핵심 검증인데, 화면 안에 글자를 그리려면 드로우 목록(U1)과
+    // 폰트 아틀라스(U2)가 먼저 있어야 한다. 제목 표시줄은 OS가 이미 그려 주므로 지금
+    // 공짜로 쓸 수 있다. 화면 안 디버그 오버레이(U5)가 들어오면 이 용도는 사라진다.
+    //
+    // ⚠️ 내용이 바뀔 때만 SetTitle을 부른다. SetWindowText는 WM_SETTEXT 동기 전송이라
+    //    같은 문자열로 매 프레임 부르면 메시지 왕복과 논클라이언트 영역 재그리기를 그냥 낸다.
+    void UpdateDebugTitle(IWindow& window) {
+        if (m_clientWorld == nullptr || m_clientSync == nullptr) {
+            return;
+        }
+
+        // 여기서 재는 해시는 "clientSimTick 까지 적용한 뒤의 로컬 월드"다.
+        // 두 클라가 같은 tick에서 같은 값을 보이면 시뮬레이션이 일치한다는 뜻이다.
+        //
+        // 매 프레임 전체 해시를 다시 계산하는 것은 월드가 커지면 부담이 된다.
+        // 지금은 엔티티가 몇 개뿐이라 무시할 만하고, 비싸지면 tick 경계에서만 재거나
+        // NetworkSyncSystem이 이미 기록해 둔 tick별 해시를 읽어오면 된다.
+        // 접속 진행 상황을 한 번씩만 로그로 남긴다.
+        //
+        // 이게 없으면 dedicated server 접속이 실패했을 때 화면도 로그도 조용해서
+        // "서버가 안 떴나 / 패킷이 안 가나 / 스냅샷이 안 오나"를 구별할 수 없다.
+        // 상태가 바뀌는 순간에만 찍으므로 매 프레임 스팸이 되지 않는다.
+        if (m_clientSync->HasWelcome() && !m_loggedWelcome) {
+            m_loggedWelcome = true;
+            LOG_INFO("서버가 clientId {}를 배정했다.",
+                     m_clientWorld->GetResource<NetworkManager>().LocalClientId());
+        }
+        if (m_clientSync->HasSnapshot() && !m_loggedSnapshot) {
+            m_loggedSnapshot = true;
+            LOG_INFO("첫 월드 스냅샷 수신 (tick {}). 이제부터 확정 입력으로 시뮬레이션한다.",
+                     m_clientSync->LastSnapshotTick());
+        }
+
+        const uint64_t hash = m_clientWorld->ComputeHash();
+        const uint64_t simTick = m_clientSync->ClientSimTick();
+
+        std::string title = "ECSFactory";
+        title += (m_mode == Mode::Join) ? " [join]" : " [single]";
+        title += " tick=" + std::to_string(simTick);
+
+        char hashText[24] = {};
+        std::snprintf(hashText, sizeof(hashText), " hash=%016llX",
+                      static_cast<unsigned long long>(hash));
+        title += hashText;
+
+        if (!m_clientSync->HasSnapshot()) {
+            title += " (스냅샷 대기)";
+        }
+        if (m_clientSync->HasHashMismatch()) {
+            // 디싱크를 감지하면 resync가 돌지만, 그런 일이 있었다는 사실 자체가 정보다.
+            title += " [디싱크!]";
+        }
+
+        if (title != m_lastTitle) {
+            window.SetTitle(title.c_str());
+            m_lastTitle = std::move(title);
+        }
     }
 
 protected:
@@ -298,6 +364,9 @@ private:
     Camera m_camera;
     Mode m_mode = Mode::SinglePlayer;
     std::string m_serverAddress;
+    std::string m_lastTitle;
+    bool m_loggedWelcome = false;
+    bool m_loggedSnapshot = false;
     uint64_t m_frameLimit = 0;
     std::string m_capturePath;
 };
