@@ -49,6 +49,17 @@ namespace EF {
         // 멱등하다. 두 번 불러도, 사용자가 이미 X로 닫은 뒤에 불러도 안전하다.
         void Destroy() override;
 
+        // 제목을 UTF-8로 해석해 바꾼다. Create()와 똑같은 변환 경로를 쓴다.
+        //
+        // 창이 없으면(Create 전이거나 이미 Destroy·사용자가 X로 닫은 뒤) 아무것도 하지
+        // 않는다 — Destroy()와 같은 "핸들이 없으면 할 일도 없다" 규칙이다. 디버그 표시용
+        // 호출이 창 수명 경계에서 터지면 곤란하고, 그렇다고 호출부마다 살아 있는지
+        // 검사하게 만들 이유도 없어서 여기서 흡수한다.
+        //
+        // ⚠️ 매 프레임 호출 금지. 내부가 SetWindowTextW = WM_SETTEXT 동기 전송이다
+        //    (근거는 IWindow::SetTitle 주석).
+        void SetTitle(const char* title) override;
+
         bool PumpMessages() override;
 
         // HWND. 창이 없으면 nullptr.
