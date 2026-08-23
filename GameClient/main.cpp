@@ -12,6 +12,7 @@
 #include "Components/Transform.hpp"
 #include "Components/Velocity.hpp"
 #include "Network/INetworkConnection.hpp"
+#include "Network/LossyConnection.hpp"
 #include "Network/MemoryConnection.hpp"
 #include "Network/NetworkManager.hpp"
 #include "Network/NetworkSyncSystem.hpp"
@@ -127,6 +128,30 @@ namespace {
     //    시스템으로 두고 RenderSystem보다 **먼저 등록**하면 같은 FrameUpdate 안에서
     //    "전멸 → 붙임 → 그리기"가 되어 깜빡임이 없어진다.
     //    (SystemRegistry::SortSystems가 아직 TODO라 등록 순서가 곧 실행 순서다.)
+    // LossyConnection의 지연 큐를 시뮬레이션 tick에 맞춰 돌린다.
+    //
+    // ⚠️ 앱 루프(프레임)가 아니라 **FixedUpdate**에서 돌려야 한다. "3틱 지연"은 고정
+    //    timestep 기준의 약속이라, 프레임률이 다른 기계에서 같은 지연을 재현하려면
+    //    시뮬레이션 박자를 따라야 한다. 프레임에서 돌리면 144Hz 기계에서는 지연이
+    //    2.5배 짧아진다 — 재현성을 위해 만든 물건이 재현성을 깨게 된다.
+    class LossyLinkPumpSystem final : public ISystem {
+    public:
+        explicit LossyLinkPumpSystem(std::shared_ptr<Network::LossyConnection> link)
+            : m_link(std::move(link)) {}
+
+        void Initialize(World&) override {}
+        void FixedUpdate(World&, Fixed64, uint64_t tick) override {
+            if (m_link) {
+                m_link->Advance(tick);
+            }
+        }
+        void FrameUpdate(World&, float) override {}
+        void Shutdown(World&) override {}
+
+    private:
+        std::shared_ptr<Network::LossyConnection> m_link;
+    };
+
     class PlayerVisualSystem final : public ISystem {
     public:
         void Initialize(World&) override {}
@@ -168,7 +193,7 @@ public:
 
         auto udpConnection = std::make_shared<Network::UDPConnection>();
         udpConnection->Connect(address, 6780);
-        AttachClientNetwork(udpConnection);
+        AttachClientNetwork(WrapWithLossyLink(udpConnection));
 
         LOG_INFO("Joining remote server at {}.", address);
     }
@@ -185,6 +210,16 @@ public:
     // 사람 없이 렌더 경로가 도는지 확인할 때 쓴다(`GameClient.exe --frames 60`).
     void SetFrameLimit(uint64_t frames) {
         m_frameLimit = frames;
+    }
+
+    // 이 클라이언트의 링크를 인위적으로 나쁘게 만든다. 재현 가능한 결정론 검증용이다.
+    //
+    // 왜 필요한가: 손실·지연 복구 경로(재전송, TickHash 불일치 → resync)는 **정상 세션에서
+    // 절대 안 밟힌다.** 그래서 조용히 썩기 딱 좋다. 실제 네트워크가 나빠지기를 기다리는 대신
+    // 시드를 고정해 같은 손실 패턴을 매번 재현한다.
+    void SetLossyLink(const Network::LossyLinkSettings& settings) {
+        m_linkSettings = settings;
+        m_hasLossyLink = true;
     }
 
     // 스크립트 입력을 설정한다. 형식: "tick:키들,tick:키들,..." (예: "20:W,80:WD,140:")
@@ -473,6 +508,25 @@ protected:
     }
 
 private:
+    // 링크 열화가 켜져 있으면 연결을 한 겹 감싼다. 꺼져 있으면 그대로 돌려준다.
+    //
+    // ⚠️ 감싼 경우 매 fixed tick Advance()를 돌려야 지연 큐가 풀린다. 그 펌프는
+    //    LossyLinkPumpSystem이 담당한다 — 앱 루프에서 부르면 프레임률에 묶여서
+    //    "3틱 지연"이 프레임률마다 다른 시간이 되어버린다.
+    std::shared_ptr<Network::INetworkConnection> WrapWithLossyLink(
+        std::shared_ptr<Network::INetworkConnection> connection) {
+        if (!m_hasLossyLink) {
+            return connection;
+        }
+
+        auto lossy = std::make_shared<Network::LossyConnection>(std::move(connection), m_linkSettings);
+        m_lossyLink = lossy;
+        LOG_INFO("링크 열화 주입: 손실 {:.0f}%, 중복 {:.0f}%, 지연 {}~{}틱, 시드 {}",
+                 m_linkSettings.lossRate * 100.0f, m_linkSettings.duplicateRate * 100.0f,
+                 m_linkSettings.minDelayTicks, m_linkSettings.maxDelayTicks, m_linkSettings.seed);
+        return lossy;
+    }
+
     void CreateLocalServerWorld(std::shared_ptr<Network::INetworkConnection> serverConnection) {
         if (m_localServerWorld) {
             return;
@@ -509,6 +563,14 @@ private:
         }
 
         m_clientWorld->AddResource<NetworkManager>(std::move(connection));
+
+        // 펌프를 sync 시스템보다 **먼저** 등록한다. 등록 순서가 곧 실행 순서라
+        // (SortSystems는 아직 TODO), 이번 tick에 도착 예정인 데이터그램을 먼저 풀어
+        // 놓아야 같은 tick의 sync가 그걸 읽는다. 뒤에 두면 항상 한 tick씩 더 늦는다.
+        if (m_lossyLink) {
+            m_clientWorld->RegisterSystem<LossyLinkPumpSystem>(m_lossyLink);
+        }
+
         if (!m_clientSync) {
             m_clientSync = &m_clientWorld->RegisterSystem<NetworkSyncSystem>(NetworkSyncMode::Client);
         }
@@ -532,6 +594,9 @@ private:
     // tick → 버튼 마스크. 스크립트 입력(가짜 키보드)용.
     std::map<uint64_t, uint64_t> m_inputScript;
     bool m_hasInputScript = false;
+    Network::LossyLinkSettings m_linkSettings{};
+    bool m_hasLossyLink = false;
+    std::shared_ptr<Network::LossyConnection> m_lossyLink;
     uint64_t m_scriptedMask = 0;
     uint64_t m_frameLimit = 0;
     std::string m_capturePath;
@@ -544,6 +609,9 @@ int main(int argc, char** argv) {
 
     // --frames N : N프레임만 돌고 끝낸다. 사람이 창을 닫아줄 수 없는 환경
     // (CI, 자동 확인)에서 렌더 경로가 실제로 도는지 보기 위한 것이다.
+    EF::Network::LossyLinkSettings link{};
+    bool hasLink = false;
+
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         const bool hasNext = (i + 1 < argc);
@@ -559,10 +627,33 @@ int main(int argc, char** argv) {
             // 가짜 키보드. "20:W,80:" = tick 20부터 앞으로, tick 80에 정지.
             // 포커스에 묶이지 않아 사람 없이 결정론 검증을 돌릴 수 있다.
             app.SetInputScript(argv[++i]);
+        } else if (arg == "--net-loss" && hasNext) {
+            link.lossRate = static_cast<float>(std::atof(argv[++i])) / 100.0f;
+            hasLink = true;
+        } else if (arg == "--net-delay" && hasNext) {
+            // "3" 또는 "1-4"(지터). 틱 단위이고 고정 timestep 20ms 기준이라 3틱 = 60ms.
+            const std::string spec = argv[++i];
+            const std::size_t dash = spec.find('-');
+            link.minDelayTicks = static_cast<uint32_t>(std::strtoul(spec.substr(0, dash).c_str(), nullptr, 10));
+            link.maxDelayTicks = (dash == std::string::npos)
+                ? link.minDelayTicks
+                : static_cast<uint32_t>(std::strtoul(spec.substr(dash + 1).c_str(), nullptr, 10));
+            hasLink = true;
+        } else if (arg == "--net-dup" && hasNext) {
+            link.duplicateRate = static_cast<float>(std::atof(argv[++i])) / 100.0f;
+            hasLink = true;
+        } else if (arg == "--net-seed" && hasNext) {
+            // 같은 시드 + 같은 트래픽 = 같은 손실 패턴. 재현의 핵심이라 반드시 로그에 남긴다.
+            link.seed = std::strtoull(argv[++i], nullptr, 10);
+            hasLink = true;
         } else if (arg == "--single") {
             // 같은 프로세스 안에 서버 월드를 두고 인메모리로 연결한다.
             app.SetMode(GameClientApplication::Mode::SinglePlayer);
         }
+    }
+
+    if (hasLink) {
+        app.SetLossyLink(link);
     }
 
     return app.Run();
