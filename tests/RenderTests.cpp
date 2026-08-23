@@ -6,6 +6,7 @@
 #include "Render/Renderable.hpp"
 #include "TestHarness.hpp"
 
+#include <string>
 #include <vector>
 
 #include <cmath>
@@ -171,6 +172,13 @@ namespace {
         [[nodiscard]] uint32_t Width() const override { return m_width; }
         [[nodiscard]] uint32_t Height() const override { return m_height; }
         bool ConsumeResized() override { return false; }
+
+        // 마지막으로 설정된 제목을 들고만 있는다. 실제 창이 없으므로 OS 호출이 없다.
+        void SetTitle(const char* title) override {
+            lastTitle = (title != nullptr) ? title : "";
+        }
+
+        std::string lastTitle;
 
     private:
         uint32_t m_width;
