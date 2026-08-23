@@ -1,6 +1,7 @@
 add_executable(EngineCoreTests
     EntityManagerTests.cpp
     GameplayTests.cpp
+    InputMappingTests.cpp
     main.cpp
     MathTests.cpp
     NetworkTests.cpp
@@ -83,3 +84,15 @@ add_test(NAME Render.AspectStretchesHorizontalExtentOnly COMMAND EngineCoreTests
 add_test(NAME Render.MovingCameraShiftsWorldOppositeOnScreen COMMAND EngineCoreTests Render.MovingCameraShiftsWorldOppositeOnScreen)
 add_test(NAME Render.DepthIsConstantInsideClipRange COMMAND EngineCoreTests Render.DepthIsConstantInsideClipRange)
 add_test(NAME Render.DegenerateAspectFallsBackToIdentity COMMAND EngineCoreTests Render.DegenerateAspectFallsBackToIdentity)
+
+# I1 — 실제 키보드/마우스를 InputCommand로 바꾸는 순수 함수들.
+add_test(NAME InputMapping.WasdAndArrowKeysProduceTheSameMoveBits COMMAND EngineCoreTests InputMapping.WasdAndArrowKeysProduceTheSameMoveBits)
+add_test(NAME InputMapping.DiagonalCombinationSetsBothAxisBits COMMAND EngineCoreTests InputMapping.DiagonalCombinationSetsBothAxisBits)
+add_test(NAME InputMapping.OppositeKeysKeepBothBitsAndCancelInsideTheSimulation COMMAND EngineCoreTests InputMapping.OppositeKeysKeepBothBitsAndCancelInsideTheSimulation)
+add_test(NAME InputMapping.SamePixelDeltaAlwaysProducesTheSameFixed64 COMMAND EngineCoreTests InputMapping.SamePixelDeltaAlwaysProducesTheSameFixed64)
+add_test(NAME InputMapping.IntegrateAimIsReproducibleForTheSameDeltaSequence COMMAND EngineCoreTests InputMapping.IntegrateAimIsReproducibleForTheSameDeltaSequence)
+add_test(NAME InputMapping.SubLsbMotionIsCarriedInsteadOfBeingDiscarded COMMAND EngineCoreTests InputMapping.SubLsbMotionIsCarriedInsteadOfBeingDiscarded)
+add_test(NAME InputMapping.PitchIsClampedToTheConfiguredLimit COMMAND EngineCoreTests InputMapping.PitchIsClampedToTheConfiguredLimit)
+add_test(NAME InputMapping.YawWrapsIntoCanonicalRange COMMAND EngineCoreTests InputMapping.YawWrapsIntoCanonicalRange)
+add_test(NAME InputMapping.NonFiniteAndImplausibleInputsAreIgnored COMMAND EngineCoreTests InputMapping.NonFiniteAndImplausibleInputsAreIgnored)
+add_test(NAME InputMapping.MakeInputCommandCarriesOnlyFixedPointAim COMMAND EngineCoreTests InputMapping.MakeInputCommandCarriesOnlyFixedPointAim)

@@ -4,6 +4,7 @@ target_sources(EngineCore
     PRIVATE
         Base/GameEngine.cpp
         ECS/EntityCommandBuffer.cpp
+        Gameplay/InputMapping.cpp
         Gameplay/PlayerMovement.cpp
         Math/Math.cpp
         Network/MemoryConnection.cpp
@@ -27,6 +28,7 @@ target_sources(EngineCore
             Components/PlayerControl.hpp
             Components/Transform.hpp
             Components/Velocity.hpp
+            Gameplay/InputMapping.hpp
             Gameplay/PlayerMovement.hpp
             ECS/ComponentPool.hpp
             ECS/Core.hpp
