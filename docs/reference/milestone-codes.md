@@ -58,8 +58,8 @@ R2
 | R2 | Device / SwapChain / RTV + `BeginFrame`·`Present`, HARDWARE→WARP 폴백 | ✅ |
 | R3 | 런타임 셰이더 컴파일 + Dynamic VB + 배칭 Draw (쿼드 하나) | ✅ |
 | R4 | `Camera`(ortho) + ViewProj 상수버퍼 (월드 XZ → 화면) | ✅ |
-| R5 | `Renderable` + `RenderSystem` + `View<Transform, Renderable>` | · |
-| R6 | **I1과 합류** — 키 입력이 서버 확정을 거쳐 화면 속 엔티티를 움직인다 | · |
+| R5 | `Renderable` + `RenderSystem` + `View<Transform, Renderable>` | ✅ |
+| R6 | **I1과 합류** — 키 입력이 서버 확정을 거쳐 화면 속 엔티티를 움직인다 | ✅ |
 | R7 | `PreviousTransform` + alpha 보간 (50Hz인데 부드럽게) | · |
 
 > **R6이 이 트랙의 핵심**이다. 새 이동 시스템을 만드는 게 아니라 **기존 lockstep 경로를 화면에 잇는 것**이고,
@@ -85,7 +85,7 @@ R2
 
 | 기호 | 무엇 | 상태 |
 |---|---|---|
-| I1 | `InputManager` → `InputCommand` 변환 (WASD·마우스가 서버로 나간다) | · |
+| I1 | `InputManager` → `InputCommand` 변환 (WASD가 서버로 나간다. 마우스 조준은 변환 계층만) | ✅ |
 
 > **함정:** 마우스 델타는 화면 픽셀(float)이다. 이걸 `Fixed64` 로 바꾸는 지점이 **시뮬레이션의 경계**다.
 > 변환은 입력 수집 단계에서 딱 한 번 하고 그 뒤로는 `Fixed64` 만 흐르게 한다.

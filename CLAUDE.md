@@ -256,6 +256,41 @@ tick당 흐름:
 - **UI는 U3까지만.** 앵커 레이아웃 계산은 있지만 그걸 그릴 `UIDrawList`(U1)와 폰트(U2)가 없어서 화면에 UI가 나오지 않는다.
 - `SystemRegistry::SortSystems()`는 TODO. 시스템은 등록 순서대로 실행된다.
 
+## 실행해서 눈으로 확인하기
+
+이제 엔진이 화면에 뜬다. 렌더·입력·동기화를 건드렸으면 테스트만 보지 말고 실제로 띄워 볼 것.
+
+```powershell
+# 싱글 (같은 프로세스에 서버 월드를 두고 인메모리 연결)
+./out/build/default/bin/GameClient.exe --single
+
+# 멀티 (dedicated server + 클라 둘). 창마다 자기 플레이어를 따라가는 카메라가 붙는다.
+./out/build/default/bin/GameServer.exe
+./out/build/default/bin/GameClient.exe --join 127.0.0.1
+./out/build/default/bin/GameClient.exe --join 127.0.0.1
+```
+
+**창 제목이 디버그 오버레이 역할을 한다** — `tick=N hash=XXXX`. 두 창에서 같은 시각에
+같은 tick의 해시가 같으면 두 시뮬레이션이 일치하는 것이다. 화면 안에 글자를 그리는
+진짜 오버레이는 U5이고, 그전까지는 이걸 쓴다.
+
+### 사람 없이 돌리는 검증 인자
+
+복구 경로(재전송, `TickHash` 불일치 → resync)는 정상 세션에서 안 밟혀서 조용히 썩는다.
+그래서 **주입해서 재현한다.** 자세한 근거와 실측치는 [roadmap.md §2.7](docs/design/roadmap.md).
+
+| 인자 | 뜻 |
+|---|---|
+| `--frames N` | N프레임만 돌고 종료 |
+| `--capture x.ppm` | 마지막 프레임 백버퍼를 PPM으로 저장(헤더 세 줄이라 파서가 필요 없다) |
+| `--input-script "20:W,80:"` | 가짜 키보드. tick 20에 전진, tick 80에 정지 |
+| `--net-loss 30` / `--net-delay 1-4` / `--net-dup 5` / `--net-seed N` | 링크 열화 주입 |
+
+`--input-script` 가 있는 이유: 실제 키보드 검증은 **창 포커스에 묶여 있다.** 창이 둘이면
+`Input` 이 `GetAsyncKeyState`(시스템 전역)를 읽으므로 양쪽이 같이 반응하고,
+자동화에서 `SetForegroundWindow` 는 신뢰할 수 없다. 스크립트는 tick 기준이라
+프레임률과 무관하게 매번 같은 결과를 내고, 실제 키보드와 **같은** `QueueLocalInput` 경로를 탄다.
+
 ## 사용할 수 있는 스킬
 
 - `explain-diff-html` — 현재 diff / 브랜치 / PR을 배경·직관·코드 워크스루·퀴즈 5문항으로 설명하는 자체완결형 HTML을 만든다. 출력은 `~/Documents/explanations/YYYY-MM-DD-explanation-<slug>.html`(저장소 밖). 학습용 프로젝트이므로 큰 변경을 끝낸 뒤 이걸로 복습 자료를 만들면 좋다.
