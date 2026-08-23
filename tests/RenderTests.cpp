@@ -1,5 +1,12 @@
+#include "Components/PlayerControl.hpp"
+#include "Components/Transform.hpp"
+#include "ECS/World.hpp"
 #include "Render/Camera.hpp"
+#include "Render/RenderSystem.hpp"
+#include "Render/Renderable.hpp"
 #include "TestHarness.hpp"
+
+#include <vector>
 
 #include <cmath>
 
@@ -116,4 +123,180 @@ TEST_CASE(Render, DegenerateAspectFallsBackToIdentity) {
         EF::ProjectPoint(zeroHeight.ViewProjection(1.0f), EF::Float3{ 1.0f, 2.0f, 3.0f });
     EXPECT_NEAR(fromZeroHeight.x, 1.0f);
     EXPECT_NEAR(fromZeroHeight.z, 3.0f);
+}
+
+// ---------------------------------------------------------------------------
+// RenderSystem — ECS 순회에서 DrawItem이 나오는 부분.
+//
+// IRenderer와 IWindow가 인터페이스라서 GPU도 창도 없이 테스트할 수 있다.
+// 이게 R0에서 백엔드를 인터페이스 뒤에 둔 값어치 중 하나다.
+// ---------------------------------------------------------------------------
+namespace {
+
+    // 제출된 DrawItem을 기록만 하는 가짜 백엔드.
+    class RecordingRenderer final : public EF::IRenderer {
+    public:
+        bool Initialize(EF::IWindow&) override { return true; }
+        void Shutdown() override {}
+        void Resize(uint32_t, uint32_t) override {}
+
+        void BeginFrame(const EF::Color& clearColor) override {
+            ++beginFrameCount;
+            lastClearColor = clearColor;
+        }
+        void SetCamera(const EF::Mat4& viewProjection) override {
+            lastViewProjection = viewProjection;
+        }
+        void Submit(const EF::RenderContext& context) override {
+            submitted.assign(context.Items().begin(), context.Items().end());
+        }
+        void EndFrame() override { ++endFrameCount; }
+
+        std::vector<EF::DrawItem> submitted;
+        EF::Color lastClearColor{};
+        EF::Mat4 lastViewProjection{};
+        int beginFrameCount = 0;
+        int endFrameCount = 0;
+    };
+
+    // 고정 크기만 돌려주는 가짜 창.
+    class FixedSizeWindow final : public EF::IWindow {
+    public:
+        FixedSizeWindow(uint32_t w, uint32_t h) : m_width(w), m_height(h) {}
+
+        bool Create(const char*, uint32_t, uint32_t) override { return true; }
+        void Destroy() override {}
+        bool PumpMessages() override { return true; }
+        [[nodiscard]] void* NativeHandle() const override { return nullptr; }
+        [[nodiscard]] uint32_t Width() const override { return m_width; }
+        [[nodiscard]] uint32_t Height() const override { return m_height; }
+        bool ConsumeResized() override { return false; }
+
+    private:
+        uint32_t m_width;
+        uint32_t m_height;
+    };
+
+    EF::EntityId SpawnDrawable(EF::World& world, int x, int z, EF::Float2 size) {
+        const EF::EntityId entity = world.CreateEntity();
+        world.AddComponent<EF::Transform>(entity, EF::Transform{
+            .position = EF::Vector3(x, 0, z),
+            .rotation = EF::Quaternion::Identity()
+        });
+        world.AddComponent<EF::Renderable>(entity, EF::Renderable{
+            .color = EF::Color::White(),
+            .size = size
+        });
+        return entity;
+    }
+
+}
+
+// Transform + Renderable을 가진 엔티티가 DrawItem으로 나온다.
+// 위치는 Fixed64에서 float으로 넘어오고, 축 대응이 유지되어야 한다.
+TEST_CASE(Render, SystemTurnsEntitiesIntoDrawItems) {
+    EF::World world;
+    RecordingRenderer renderer;
+    FixedSizeWindow window(800, 600);
+    EF::Camera camera;
+
+    SpawnDrawable(world, 3, -7, EF::Float2{ 2.0f, 5.0f });
+
+    auto& system = world.RegisterSystem<EF::RenderSystem>(renderer, camera, window);
+    static_cast<void>(system);
+    world.FrameUpdate(0.016f);
+
+    EXPECT_EQ(renderer.submitted.size(), static_cast<std::size_t>(1));
+    EXPECT_NEAR(renderer.submitted[0].position.x, 3.0f);
+    EXPECT_NEAR(renderer.submitted[0].position.z, -7.0f);
+    EXPECT_NEAR(renderer.submitted[0].size.x, 2.0f);
+    EXPECT_NEAR(renderer.submitted[0].size.y, 5.0f);
+}
+
+// Renderable이 없는 엔티티는 그리지 않는다.
+// 서버가 만든 엔티티에 표현 컴포넌트가 아직 안 붙은 상태가 실제로 존재한다.
+TEST_CASE(Render, SystemSkipsEntitiesWithoutRenderable) {
+    EF::World world;
+    RecordingRenderer renderer;
+    FixedSizeWindow window(800, 600);
+    EF::Camera camera;
+
+    SpawnDrawable(world, 0, 0, EF::Float2{ 1.0f, 1.0f });
+
+    // Transform만 있고 Renderable이 없는 엔티티
+    const EF::EntityId bare = world.CreateEntity();
+    world.AddComponent<EF::Transform>(bare, EF::Transform{});
+
+    world.RegisterSystem<EF::RenderSystem>(renderer, camera, window);
+    world.FrameUpdate(0.016f);
+
+    EXPECT_EQ(renderer.submitted.size(), static_cast<std::size_t>(1));
+}
+
+// 렌더 시스템은 월드를 읽기만 한다. 시뮬레이션 상태를 바꾸면 결정론이 깨진다.
+// 프레임을 여러 번 돌려도 월드 해시가 그대로여야 한다.
+TEST_CASE(Render, SystemDoesNotMutateSimulationState) {
+    EF::World world;
+    RecordingRenderer renderer;
+    FixedSizeWindow window(800, 600);
+    EF::Camera camera;
+
+    SpawnDrawable(world, 5, 5, EF::Float2{ 1.0f, 1.0f });
+    world.RegisterSystem<EF::RenderSystem>(renderer, camera, window);
+
+    const uint64_t before = world.ComputeHash();
+    world.FrameUpdate(0.016f);
+    world.FrameUpdate(0.016f);
+    world.FrameUpdate(0.016f);
+    const uint64_t after = world.ComputeHash();
+
+    EXPECT_EQ(before, after);
+}
+
+// 시뮬레이션 박자에서는 아무것도 그리지 않는다.
+// FixedUpdate에서 그리면 프레임률이 시뮬레이션 속도를 바꾸게 된다.
+TEST_CASE(Render, SystemDrawsOnFrameUpdateNotFixedUpdate) {
+    EF::World world;
+    RecordingRenderer renderer;
+    FixedSizeWindow window(800, 600);
+    EF::Camera camera;
+
+    SpawnDrawable(world, 0, 0, EF::Float2{ 1.0f, 1.0f });
+    world.RegisterSystem<EF::RenderSystem>(renderer, camera, window);
+
+    world.FixedUpdate(EF::Fixed64::FromInt(0), 1);
+    EXPECT_EQ(renderer.beginFrameCount, 0);
+
+    world.FrameUpdate(0.016f);
+    EXPECT_EQ(renderer.beginFrameCount, 1);
+}
+
+// Present는 시스템이 하지 않는다. 앱이 프레임을 닫는다.
+// 이게 지켜져야 나중에 UI 패스가 월드 위에 낄 자리가 생긴다.
+TEST_CASE(Render, SystemDoesNotPresent) {
+    EF::World world;
+    RecordingRenderer renderer;
+    FixedSizeWindow window(800, 600);
+    EF::Camera camera;
+
+    world.RegisterSystem<EF::RenderSystem>(renderer, camera, window);
+    world.FrameUpdate(0.016f);
+
+    EXPECT_EQ(renderer.endFrameCount, 0);
+}
+
+// 창 크기에서 aspect를 읽어 카메라 행렬을 만든다.
+// 높이가 0(최소화)이면 항등으로 물러나 NaN 프레임을 막는다.
+TEST_CASE(Render, SystemBuildsCameraMatrixFromWindowAspect) {
+    EF::World world;
+    RecordingRenderer renderer;
+    FixedSizeWindow window(1000, 500);   // aspect 2.0
+    EF::Camera camera;
+    camera.viewHeightWorldUnits = 20.0f; // halfHeight 10 → halfWidth 20
+
+    world.RegisterSystem<EF::RenderSystem>(renderer, camera, window);
+    world.FrameUpdate(0.016f);
+
+    EXPECT_NDC(EF::ProjectPoint(renderer.lastViewProjection, EF::Float3{ 20.0f, 0.0f, 0.0f }), 1.0f, 0.0f);
+    EXPECT_NDC(EF::ProjectPoint(renderer.lastViewProjection, EF::Float3{ 0.0f, 0.0f, 10.0f }), 0.0f, 1.0f);
 }

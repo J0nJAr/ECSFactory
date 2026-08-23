@@ -95,9 +95,18 @@ namespace EF {
             return m_registry.AddComponent<T>(entity, std::forward<Args>(args)...);
         }
 
-        template<typename... T>
-        auto CreateView() {
-            return m_registry.CreateView<T...>();
+        /// @brief 쿼리에 맞는 엔티티를 순회하는 View를 만든다.
+        ///
+        /// 제외 목록도 그대로 전달한다:
+        ///   world.CreateView<Transform, PlayerControl>()
+        ///   world.CreateView<Transform, PlayerControl>(Without<Renderable>{})
+        ///
+        /// 이 ECS에는 `HasComponent` 가 없다. "이 컴포넌트가 붙어 있나"를 묻는 자리는
+        /// 전부 `Without<...>` 뷰로 표현한다 — 개별 조회를 열어 두면 뷰를 안 쓰고
+        /// 엔티티를 하나씩 훑는 코드가 생기기 쉽고, 그건 dense 순회의 이점을 버린다.
+        template<typename... T, typename... Excluded>
+        auto CreateView(Without<Excluded...> without = {}) {
+            return m_registry.CreateView<T...>(without);
         }
 
         template<typename TSystem, typename... Args>

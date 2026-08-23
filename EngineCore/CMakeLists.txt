@@ -95,6 +95,7 @@ target_sources(EngineRender
         Platform/Win32Window.cpp
         Render/Camera.cpp
         Render/Dx11/Dx11Renderer.cpp
+        Render/RenderSystem.cpp
         UI/AnchorLayout.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -107,7 +108,9 @@ target_sources(EngineRender
             Render/Dx11/Dx11Renderer.hpp
             Render/IRenderer.hpp
             Render/RenderContext.hpp
+            Render/RenderSystem.hpp
             Render/RenderTypes.hpp
+            Render/Renderable.hpp
             UI/AnchorLayout.hpp
 )
 
