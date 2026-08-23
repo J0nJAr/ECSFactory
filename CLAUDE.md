@@ -130,7 +130,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -Rel
 
 ### ECS 계층 ([EngineCore/ECS/](EngineCore/ECS/))
 
-- **`EntityId`** ([Core.hpp](EngineCore/ECS/Core.hpp)): 기본 64비트(`EF_ENTITY_ID_64`, index 32 : version 32). 해제된 index를 재사용하면 version이 올라간다. `GetEntityIndex` / `GetEntityVersion` / `CreateEntityId` 헬퍼를 쓰고, 센티널은 `kNullEntity`.
+- **`EntityId`** ([Core.hpp](EngineCore/ECS/Core.hpp)): 기본 64비트(`EF_ENTITY_ID_64`, index 32 : version 32). 해제된 index를 재사용하면 version이 올라간다. `GetEntityIndex` / `GetEntityVersion` / `CreateEntityId` 헬퍼를 쓰고, 센티널은 `kNullEntity`. `EntityManager::IsAlive`는 version뿐 아니라 **index별 생존 플래그**(free list에서 유도되는 캐시)까지 본다 — 회수됐지만 아직 재사용되지 않은 index로 만든 id도 죽은 것으로 판정된다. `ResolveEntityId(index)`는 그런 index에도 id를 돌려주므로, 생존은 항상 `IsAlive`로 물을 것.
 - **`Registry`**: `EntityManager`와 타입별로 인덱싱된 `vector<unique_ptr<IPool>>`을 소유한다. 엔티티 생성·삭제, 컴포넌트 추가·제거, `CreateView<...>()`.
 - **`ComponentPool<T>`**: `SparseSet<EntityIndex, T>`를 감싸고 `IPool` 인터페이스로 dense 바이트 span을 노출한다 — 스냅샷과 해시가 순회하는 게 이것이다.
 - **`View<With<...>, Without<...>>`**: 쿼리에 맞는 엔티티를 순회한다. 효율을 위해 **필수 풀 중 가장 작은 것**부터 시작한다. `view.ForEach([](EntityId, A&, B&){...})`(엔티티 인자는 선택)과 range-`for` 둘 다 된다.
@@ -204,7 +204,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -Rel
 - 클라이언트는 타입마다 `World::RegisterSnapshotComponent<T>()`로 명시 등록해야 한다(trivially-copyable을 static_assert). `ApplySnapshot`은 레지스트리를 처음부터 재구성하고, `hash`/`size`/`alignment`/`isTrivial`/바이트 수가 안 맞는 타입은 **거부**한다.
 - 스냅샷은 **조인과 resync 전용**이다 — 매 tick 상태 스트리밍이 아니다(아래 lockstep 참조).
 - `ComponentSnapshot.entities`에는 `EntityIndex`만 실리고 **version은 실리지 않는다.** 따라서 컴포넌트가 `EntityId`로 다른 엔티티를 참조하면 왕복에서 살아남지 못한다. 복제되는 링크는 안정적인 도메인 id(현재는 `clientId`)로 걸어야 한다.
-- `World::ComputeHash()`(trivial 풀에 대한 FNV-1a)가 결정론 체크섬이고, `TickHash` 비교 → `ResyncRequest`를 구동한다.
+- `World::ComputeHash()`(trivial 풀에 대한 FNV-1a)가 결정론 체크섬이고, `TickHash` 비교 → `ResyncRequest`를 구동한다. 풀 순회는 **`TypeInfo::hash` 오름차순**이다 — 프로세스 로컬인 `index` 순서로 돌면 타입 첫 사용 순서가 다른 두 프로세스가 같은 월드에서 다른 해시를 낸다. `RegisterPresentationComponent<T>()`로 등록된 클라 전용 표현 컴포넌트는 해시에서 빠진다.
 
 ## 결정론 입력 lockstep
 
@@ -251,9 +251,7 @@ tick당 흐름:
 - 실제 키보드·마우스 입력(`Input`, [Base/InputManager.hpp](EngineCore/Base/InputManager.hpp))이 `InputCommand`로 변환되지 않는다. 테스트는 `NetworkSyncSystem::QueueLocalInput`을 직접 호출한다.
 - 클라이언트 예측·롤백 없음 — 클라는 입력 지연 + RTT만큼 뒤처진다.
 - **결정론 스폰/디스폰** 🟡 절반 완료 — 스냅샷이 `EntityManager` 상태(version / free list / next index)를 나르지 않던 문제는 해결됐다(N1). 남은 것은 **스폰·디스폰이 확정 입력 경로에서만 일어나게 하는 것**(N2)이다. 지금은 `NetworkSyncSystem`의 `Hello` 처리가 확정 입력 밖에서 `CreateEntity()`를 부른다. 건설·스폰이 필요한 작업 전에 정리할 것 — [roadmap.md §6](docs/design/roadmap.md).
-- ⚠️ **`World::ComputeHash()`가 풀을 프로세스 로컬 타입 인덱스 순서로 순회한다.** 타입을 처음 쓰는 순서가 다른 두 프로세스는 월드 내용이 같아도 다른 해시를 낸다(위의 index vs hash 규칙을 해시 함수 자신이 밟고 있다). 지금은 클라·서버가 같은 순서로 등록해서 드러나지 않을 뿐이다.
 - ⚠️ **디싱크 복구(resync)가 스냅샷 tick 라벨을 한 칸 앞서 붙인다.** 서버가 `ResyncRequest`에 답하는 `CreateSnapshot(tick)`은 `ConfirmInputs(tick)` **적용 전** 상태인데 라벨은 `tick`으로 나간다. 클라는 그걸 받고 `InputFrame(tick)`을 버리므로 **resync마다 확정 입력 한 프레임을 잃고**, 월드가 매 tick 바뀌는 동안에는 복구가 끝나지 않는다(tick마다 전체 스냅샷을 받는 무한 루프. 200 tick 실측 확인). 조인 핸드셰이크도 같은 경로를 밟는데 접속 순간엔 아무도 안 움직여서 안 드러날 뿐이다. 상세와 재현은 [deterministic-input-lockstep.md §7](docs/design/deterministic-input-lockstep.md), 탐지·복구 경로 테스트는 `Network.*ResyncSnapshot` 계열.
-- ⚠️ **`EntityManager::IsAlive`가 free list를 보지 않는다.** version만 비교하므로 "파괴됐지만 아직 재사용되지 않은 index"로 만든 id를 살아 있다고 판정한다. `View`가 dense 풀에서만 id를 뽑아 현재는 안 물리지만, 임의 index로 id를 만드는 코드를 추가하면 물린다.
 - **렌더링은 R6까지.** 남은 것은 보간(R7)뿐이다 — 50Hz 시뮬을 그대로 그리므로 빠르게 움직이면 끊겨 보인다. 텍스처·깊이 버퍼·컬링도 아직 없다(컬러 쿼드만).
 - 📌 **스냅샷 tick 라벨은 `SimulatedThroughTick(tick)` = `tick - 1`이다.** 서버의 한 tick은 `수신 처리 → 입력 확정·적용 → TickHash 방송` 순이고 스냅샷은 첫 단계에서 만들어지므로, 그 월드는 아직 `tick`의 입력을 적용하지 않은 상태다. 라벨이 곧 클라의 `clientSimTick`이 되므로 `tick`으로 붙이면 클라가 `InputFrame{tick}`을 "이미 지난 것"으로 버린다 — **resync마다 확정 입력을 한 프레임 삼키던 버그였다.** 정지한 월드에서는 삼킨 프레임이 no-op이라 우연히 복구되어 오래 숨어 있었다. `Network.DesyncRecoversWhileWorldKeepsMoving`이 이 계약을 지킨다.
 - ⚠️ **접속 해제 경로가 없다.** 나간 클라이언트의 플레이어 엔티티가 영원히 남고, 재접속하면 endpoint가 달라져 새 `clientId` + 새 스폰이 되어 유령이 쌓인다.

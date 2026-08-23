@@ -57,6 +57,17 @@
 - 중첩된 부모-자식-손자에서 위치가 누적되어 맞는다.
 - float 비교에 허용오차를 쓴다.
 
+### ECS 결함 수정 — 해시 순회 순서와 생존 판정
+
+- `World::ComputeHash()`의 풀 순회 순서가 `TypeInfo::index`가 아니라 `TypeInfo::hash`로 결정된다.
+- 같은 내용을 가진 두 월드는, 두 월드가 컴포넌트 타입을 처음 사용한 순서가 서로 반대여도 같은 해시를 낸다.
+- 값만 서로 맞바꾼 두 월드는 여전히 다른 해시를 낸다(정렬이 체크섬의 탐지력을 깎지 않았다).
+- `RegisterPresentationComponent<T>()`로 제외된 타입은 여전히 해시에서 빠진다.
+- `EntityManager::IsAlive`가 회수된 index에 대해 false를 준다. `ResolveEntityId(index)`로 만든 id도 마찬가지다.
+- 그 index가 재사용되면 다시 true가 되고, 재사용 전에 발급된 옛 id는 계속 false다.
+- `RestoreFrom()` 직후에도 생존 판정이 스냅샷의 free list와 일치한다.
+- `IsAlive`가 free list를 선형 탐색하지 않는다(호출당 상수 시간).
+
 ### 교차검증 지적 반영분
 
 - `TickHash` 비교는 **그 tick을 시뮬레이션한 순간의** 로컬 해시와 이루어진다. 여러 `InputFrame`이 한 `FixedUpdate`에 몰아서 적용되어 `clientSimTick`이 점프해도 허위 불일치가 나지 않는다.
