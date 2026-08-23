@@ -69,6 +69,10 @@ namespace {
                                              std::shared_ptr<EF::Network::INetworkConnection> connection) {
         world.RegisterSnapshotComponent<EF::Transform>();
         world.RegisterSnapshotComponent<EF::Velocity>();
+        // 서버는 Hello를 받을 때 플레이어 엔티티에 PlayerControl을 붙인다.
+        // 클라이언트가 이 타입을 등록하지 않으면 스냅샷에서 조용히 버려져서
+        // ComputeHash()가 영원히 어긋난다.
+        world.RegisterSnapshotComponent<EF::PlayerControl>();
         world.AddResource<EF::NetworkManager>(std::move(connection));
         return world.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
     }
@@ -77,34 +81,44 @@ namespace {
         return EF::Fixed64::FromRaw(EF::Fixed64::Scale / 50);
     }
 
-    EF::World CreateLockstepPlayerWorld(uint32_t clientId) {
+    // lockstep 테스트용 서버 월드.
+    //
+    // 플레이어 엔티티를 여기서 미리 만들지 않는 것이 핵심이다. 서버가 Hello를 받을 때
+    // Transform + PlayerControl{clientId}를 붙여서 직접 스폰하므로(NetworkSyncSystem),
+    // 테스트가 손으로 붙이면 같은 clientId를 가진 엔티티가 둘이 되어 실제 동작을 가린다.
+    EF::World CreateLockstepServerWorld() {
         EF::World world;
         world.RegisterSnapshotComponent<EF::Transform>();
         world.RegisterSnapshotComponent<EF::PlayerControl>();
-
-        const EF::EntityId entity = world.CreateEntity();
-        world.AddComponent<EF::Transform>(entity, EF::Transform{
-            .position = EF::Vector3(0, 0, 0),
-            .rotation = EF::Quaternion::Identity()
-        });
-        world.AddComponent<EF::PlayerControl>(entity, EF::PlayerControl{ .clientId = clientId });
         return world;
     }
 
-    EF::World CreateLockstepPlayersWorld(uint32_t count) {
-        EF::World world;
-        world.RegisterSnapshotComponent<EF::Transform>();
-        world.RegisterSnapshotComponent<EF::PlayerControl>();
+    // 월드 안에서 특정 clientId가 조종하는 플레이어를 찾아 온다.
+    //
+    // ApplyConfirmedInputs가 쓰는 것과 **같은 질의**(View<Transform, PlayerControl>)를 쓴다.
+    // 그래야 "찾았다"가 곧 "확정 입력이 이 엔티티에 적용된다"와 같은 뜻이 된다.
+    // matchCount를 함께 세는 이유: 같은 clientId를 가진 엔티티가 둘 이상이면 입력이
+    // 여러 엔티티에 동시에 먹는다는 뜻이라 그 자체로 결함이다.
+    struct PlayerProbe {
+        bool found = false;
+        EF::EntityIndex entityIndex = 0;
+        EF::Vector3 position;
+        std::size_t matchCount = 0;
+    };
 
-        for (uint32_t clientId = 1; clientId <= count; ++clientId) {
-            const EF::EntityId entity = world.CreateEntity();
-            world.AddComponent<EF::Transform>(entity, EF::Transform{
-                .position = EF::Vector3(0, 0, 0),
-                .rotation = EF::Quaternion::Identity()
-            });
-            world.AddComponent<EF::PlayerControl>(entity, EF::PlayerControl{ .clientId = clientId });
-        }
-        return world;
+    PlayerProbe ProbePlayer(EF::World& world, uint32_t clientId) {
+        PlayerProbe probe;
+        auto view = world.CreateView<EF::Transform, EF::PlayerControl>();
+        view.ForEach([&](EF::EntityIndex entityIndex, EF::Transform& transform, EF::PlayerControl& control) {
+            if (control.clientId != clientId) {
+                return;
+            }
+            probe.found = true;
+            probe.entityIndex = entityIndex;
+            probe.position = transform.position;
+            ++probe.matchCount;
+        });
+        return probe;
     }
 
     std::vector<EF::InputCommand> DrainInputCommands(EF::NetworkManager& network) {
@@ -178,6 +192,7 @@ TEST_CASE(Network, SyncSystemCompletesInitialSnapshotHandshake) {
     EF::World clientWorld;
     clientWorld.RegisterSnapshotComponent<EF::Transform>();
     clientWorld.RegisterSnapshotComponent<EF::Velocity>();
+    clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
     clientWorld.AddResource<EF::NetworkManager>(clientConnection);
     EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
 
@@ -214,6 +229,7 @@ TEST_CASE(Network, SyncSystemSendsQueuedInputToServer) {
     EF::World clientWorld;
     clientWorld.RegisterSnapshotComponent<EF::Transform>();
     clientWorld.RegisterSnapshotComponent<EF::Velocity>();
+    clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
     clientWorld.AddResource<EF::NetworkManager>(clientConnection);
     EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
 
@@ -287,7 +303,7 @@ TEST_CASE(Network, ConfirmInputsReturnsSortedInputsAndHoldsMissing) {
 TEST_CASE(Network, ClientAppliesRelayedInputFramesInOrder) {
     auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
 
-    EF::World serverWorld = CreateLockstepPlayerWorld(1);
+    EF::World serverWorld = CreateLockstepServerWorld();
     serverWorld.AddResource<EF::NetworkManager>(serverConnection);
     serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
 
@@ -330,7 +346,7 @@ TEST_CASE(Network, ClientAppliesRelayedInputFramesInOrder) {
 TEST_CASE(Network, ClientQueuesInputForEstimatedServerTickPlusDelay) {
     auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
 
-    EF::World serverWorld = CreateLockstepPlayerWorld(1);
+    EF::World serverWorld = CreateLockstepServerWorld();
     EF::NetworkManager& serverNetwork = serverWorld.AddResource<EF::NetworkManager>(serverConnection);
     serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
 
@@ -405,6 +421,7 @@ TEST_CASE(Network, SyncSystemRequestsAndAppliesResyncOnHashMismatch) {
     EF::World clientWorld;
     clientWorld.RegisterSnapshotComponent<EF::Transform>();
     clientWorld.RegisterSnapshotComponent<EF::Velocity>();
+    clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
     clientWorld.AddResource<EF::NetworkManager>(clientConnection);
     EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
 
@@ -1136,17 +1153,15 @@ TEST_CASE(Network, LockstepConvergesTwoClientsOverLossyReorderingLink) {
     auto clientOneHost = net.CreateHost(clientOneEp, serverEp);
     auto clientTwoHost = net.CreateHost(clientTwoEp, serverEp);
 
-    EF::World serverWorld = CreateLockstepPlayersWorld(2);
+    EF::World serverWorld = CreateLockstepServerWorld();
     serverWorld.AddResource<EF::NetworkManager>(serverHost);
     serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
 
     EF::World clientOneWorld;
     EF::NetworkSyncSystem& clientOneSync = AttachClientWorld(clientOneWorld, clientOneHost);
-    clientOneWorld.RegisterSnapshotComponent<EF::PlayerControl>();
 
     EF::World clientTwoWorld;
     EF::NetworkSyncSystem& clientTwoSync = AttachClientWorld(clientTwoWorld, clientTwoHost);
-    clientTwoWorld.RegisterSnapshotComponent<EF::PlayerControl>();
 
     const EF::Fixed64 dt = FixedTickDelta();
     for (uint64_t tick = 1; tick <= 700; ++tick) {
@@ -1219,7 +1234,7 @@ TEST_CASE(Network, LargeSnapshotReassemblesOverLossyLink) {
 TEST_CASE(Network, BatchedInputFramesDoNotCauseFalseHashMismatch) {
     auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
 
-    EF::World serverWorld = CreateLockstepPlayerWorld(1);
+    EF::World serverWorld = CreateLockstepServerWorld();
     serverWorld.AddResource<EF::NetworkManager>(serverConnection);
     serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
 
@@ -1256,4 +1271,174 @@ TEST_CASE(Network, BatchedInputFramesDoNotCauseFalseHashMismatch) {
     clientWorld.FixedUpdate(dt, tick);
 
     EXPECT_FALSE(clientSync.HasHashMismatch());
+}
+
+// 서버가 Hello를 받으면 그 클라이언트가 "조종할 수 있고 그려질 수 있는" 엔티티를 만든다.
+//
+// 회귀 방지 대상: 예전에는 world.CreateEntity()만 하고 컴포넌트를 하나도 붙이지 않아서,
+// 접속한 클라이언트에게 조종할 대상도 그릴 위치도 없었다. 테스트가 손으로 컴포넌트를
+// 붙이고 있었기 때문에 이 구멍이 드러나지 않았다.
+TEST_CASE(Network, ServerSpawnsControllablePlayerEntityOnHello) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World serverWorld = CreateLockstepServerWorld();
+    EF::NetworkManager& serverNetwork = serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+    clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    // 출발점: 서버 월드에 플레이어는 없다. 스폰은 오직 Hello 처리에서만 일어난다.
+    EXPECT_FALSE(ProbePlayer(serverWorld, 1).found);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    clientWorld.FixedUpdate(dt, 1); // 클라가 Hello를 보낸다
+    serverWorld.FixedUpdate(dt, 1); // 서버가 플레이어를 스폰하고 Welcome + TypeTable로 답한다
+    clientWorld.FixedUpdate(dt, 2); // 클라가 스냅샷을 요청한다
+    serverWorld.FixedUpdate(dt, 2); // 서버가 스냅샷을 보낸다
+    clientWorld.FixedUpdate(dt, 3); // 클라가 스냅샷을 적용한다
+
+    EXPECT_TRUE(clientSync.HasSnapshot());
+
+    const EF::NetworkClientState* serverClient = serverNetwork.FindClient(1);
+    EXPECT_TRUE(serverClient != nullptr);
+    EXPECT_TRUE(serverClient->hasControlledEntity);
+
+    // 서버: Transform + PlayerControl을 갖춘 엔티티가 정확히 하나 생겼고,
+    // 그것이 NetworkClientState가 가리키는 조종 엔티티다.
+    const PlayerProbe serverPlayer = ProbePlayer(serverWorld, 1);
+    EXPECT_TRUE(serverPlayer.found);
+    EXPECT_EQ(serverPlayer.matchCount, static_cast<std::size_t>(1));
+    EXPECT_EQ(serverPlayer.entityIndex, EF::GetEntityIndex(serverClient->controlledEntity));
+
+    // 첫 클라이언트(clientId == 1)의 스폰 슬롯은 0이므로 원점이다.
+    EXPECT_TRUE(serverPlayer.position == EF::Vector3(0, 0, 0));
+
+    // 클라이언트도 스냅샷으로 같은 엔티티를 받아야 한다.
+    // 못 받으면 클라 쪽 View<Transform, PlayerControl>이 비어서 확정 입력이
+    // 아무 데도 적용되지 않고, 서버만 움직이는 디싱크가 된다.
+    const PlayerProbe clientPlayer = ProbePlayer(clientWorld, 1);
+    EXPECT_TRUE(clientPlayer.found);
+    EXPECT_EQ(clientPlayer.entityIndex, serverPlayer.entityIndex);
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+}
+
+// 확정 입력은 그 입력을 보낸 클라이언트의 엔티티 **하나만** 움직여야 한다.
+// PlayerControl.clientId 매칭이 깨지면(예: 스폰이 clientId를 안 넣으면)
+// 아무도 안 움직이거나 전원이 같이 움직인다.
+TEST_CASE(Network, ConfirmedInputMovesOnlyTheOwningPlayerEntity) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(20260823);
+    const Endpoint serverEp = Endpoint::Memory(2000);
+    const Endpoint clientOneEp = Endpoint::Memory(2001);
+    const Endpoint clientTwoEp = Endpoint::Memory(2002);
+
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientOneHost = net.CreateHost(clientOneEp, serverEp);
+    auto clientTwoHost = net.CreateHost(clientTwoEp, serverEp);
+
+    EF::World serverWorld = CreateLockstepServerWorld();
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientOneWorld;
+    EF::NetworkSyncSystem& clientOneSync = AttachClientWorld(clientOneWorld, clientOneHost);
+    EF::World clientTwoWorld;
+    EF::NetworkSyncSystem& clientTwoSync = AttachClientWorld(clientTwoWorld, clientTwoHost);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    for (uint64_t tick = 1; tick <= 20; ++tick) {
+        clientOneWorld.FixedUpdate(dt, tick);
+        clientTwoWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+    EXPECT_TRUE(clientOneSync.HasSnapshot());
+    EXPECT_TRUE(clientTwoSync.HasSnapshot());
+
+    const uint32_t idOne = clientOneWorld.GetResource<EF::NetworkManager>().LocalClientId();
+    const uint32_t idTwo = clientTwoWorld.GetResource<EF::NetworkManager>().LocalClientId();
+    EXPECT_TRUE(idOne != idTwo);
+
+    const PlayerProbe beforeOne = ProbePlayer(serverWorld, idOne);
+    const PlayerProbe beforeTwo = ProbePlayer(serverWorld, idTwo);
+    EXPECT_TRUE(beforeOne.found);
+    EXPECT_TRUE(beforeTwo.found);
+
+    // 확정 입력을 서버 월드에 직접 적용한다. 릴레이 경로를 태우지 않는 이유는 결과가
+    // "확정 입력이 몇 tick 동안 hold되는가"에 흔들리지 않게 하려는 것이다.
+    // (릴레이까지 포함한 수렴은 LockstepConverges... 테스트들이 이미 덮는다.)
+    const std::array<EF::InputCommand, 1> confirmed{
+        EF::InputCommand{ .clientId = idOne, .buttonMask = EF::kInputMoveRight }
+    };
+    EF::ApplyConfirmedInputs(serverWorld, confirmed);
+
+    const PlayerProbe afterOne = ProbePlayer(serverWorld, idOne);
+    const PlayerProbe afterTwo = ProbePlayer(serverWorld, idTwo);
+
+    // 입력을 보낸 쪽만 +X로 1유닛(tick당 고정 스텝) 움직인다.
+    EXPECT_TRUE(afterOne.position == beforeOne.position + EF::Vector3(1, 0, 0));
+    EXPECT_TRUE(afterTwo.position == beforeTwo.position);
+}
+
+// 두 클라이언트의 스폰 위치가 서로 달라야 한다.
+// 전원이 원점에 겹쳐 나오면 화면에서 누가 누군지 구별할 수 없다.
+TEST_CASE(Network, PlayerSpawnPositionsDifferPerClient) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(20260824);
+    const Endpoint serverEp = Endpoint::Memory(2100);
+    const Endpoint clientOneEp = Endpoint::Memory(2101);
+    const Endpoint clientTwoEp = Endpoint::Memory(2102);
+
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientOneHost = net.CreateHost(clientOneEp, serverEp);
+    auto clientTwoHost = net.CreateHost(clientTwoEp, serverEp);
+
+    EF::World serverWorld = CreateLockstepServerWorld();
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientOneWorld;
+    EF::NetworkSyncSystem& clientOneSync = AttachClientWorld(clientOneWorld, clientOneHost);
+    EF::World clientTwoWorld;
+    EF::NetworkSyncSystem& clientTwoSync = AttachClientWorld(clientTwoWorld, clientTwoHost);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    for (uint64_t tick = 1; tick <= 20; ++tick) {
+        clientOneWorld.FixedUpdate(dt, tick);
+        clientTwoWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+    EXPECT_TRUE(clientOneSync.HasSnapshot());
+    EXPECT_TRUE(clientTwoSync.HasSnapshot());
+
+    const uint32_t idOne = clientOneWorld.GetResource<EF::NetworkManager>().LocalClientId();
+    const uint32_t idTwo = clientTwoWorld.GetResource<EF::NetworkManager>().LocalClientId();
+    EXPECT_TRUE(idOne != idTwo);
+
+    const PlayerProbe playerOne = ProbePlayer(serverWorld, idOne);
+    const PlayerProbe playerTwo = ProbePlayer(serverWorld, idTwo);
+    EXPECT_TRUE(playerOne.found);
+    EXPECT_TRUE(playerTwo.found);
+    EXPECT_FALSE(playerOne.position == playerTwo.position);
+
+    // 스폰 규칙: x = (clientId - 1) * 간격, y = z = 0. clientId에서만 유도하므로
+    // 스냅샷을 받은 클라이언트도 같은 값을 그대로 재현한다.
+    //
+    // ⚠️ 여기 6은 NetworkSyncSystem.cpp의 kPlayerSpawnSpacingUnits를 옮겨 적은 값이다
+    //    (그 상수는 구현 세부라 헤더로 내보내지 않았다). 간격을 바꾸면 이 테스트가
+    //    깨지면서 "스폰 규칙이 바뀌었다"고 알려 준다 — 그게 의도다.
+    constexpr int32_t kSpawnSpacingUnits = 6;
+    EXPECT_TRUE(playerOne.position ==
+                EF::Vector3(static_cast<int32_t>(idOne - 1) * kSpawnSpacingUnits, 0, 0));
+    EXPECT_TRUE(playerTwo.position ==
+                EF::Vector3(static_cast<int32_t>(idTwo - 1) * kSpawnSpacingUnits, 0, 0));
+
+    // 클라이언트 쪽에도 두 플레이어가 모두 와 있어야 한다(= 남의 캐릭터도 그릴 수 있다).
+    EXPECT_TRUE(ProbePlayer(clientOneWorld, idTwo).found);
+    EXPECT_TRUE(ProbePlayer(clientTwoWorld, idOne).found);
 }
