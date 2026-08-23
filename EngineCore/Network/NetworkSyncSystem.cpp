@@ -126,6 +126,29 @@ namespace EF {
         VerifyPendingTickHashes(network);
     }
 
+    namespace {
+        // 지금 서버 월드가 "어느 tick까지 시뮬레이션한 상태"인지.
+        //
+        // ⚠️ 이 한 줄이 resync 정확성의 핵심이다. UpdateServer의 순서가
+        //        수신 처리(여기서 스냅샷을 만든다) → ConfirmInputs → ApplyConfirmedInputs → TickHash 방송
+        //    이라, 패킷을 처리하는 시점의 월드는 **tick의 입력을 아직 적용하지 않았다.**
+        //    즉 tick-1 까지 시뮬레이션한 상태다.
+        //
+        //    예전에는 이걸 그냥 `tick` 으로 라벨링했고, 그래서 이런 일이 벌어졌다.
+        //    클라는 스냅샷을 받고 `clientSimTick = snapshot.tick` 으로 놓는데,
+        //    같은 tick의 InputFrame은 `frame.tick > m_clientSimTick` 을 통과하지 못해
+        //    **버려진다.** 결과적으로 resync 할 때마다 확정 입력을 정확히 한 프레임 삼키고,
+        //    월드가 계속 바뀌는 중이면 영원히 한 스텝 뒤처진 채 재동기화를 반복했다
+        //    (실측: 200 tick / 스냅샷 200개를 받고도 미복구).
+        //    월드가 정지해 있을 때만 삼킨 프레임이 no-op이라 우연히 복구됐다.
+        //
+        //    tick 0에서는 뺄 것이 없다. 그때는 아직 아무 입력도 적용되지 않은 초기 상태이고,
+        //    라벨 0이 곧 "아무것도 시뮬레이션하지 않았다"라 의미가 맞는다.
+        [[nodiscard]] uint64_t SimulatedThroughTick(uint64_t tick) noexcept {
+            return tick == 0 ? 0 : tick - 1;
+        }
+    }
+
     void NetworkSyncSystem::UpdateServer(World& world, NetworkManager& network, uint64_t tick) {
         while (auto received = network.TryReceive()) {
             HandlePacketOnServer(world, network, received->from, received->packet, tick);
@@ -267,7 +290,20 @@ namespace EF {
             const uint64_t localHash = localIt->second;
             if (localHash != remoteHash) {
                 m_hasHashMismatch = true;
-                network.SendResyncRequest(tick, localHash, remoteHash);
+
+                // ⚠️ 요청은 **한 번에 하나만** 띄운다.
+                //
+                //    디싱크가 나면 그 뒤의 tick들도 줄줄이 어긋난다. 불일치하는 pending tick
+                //    마다 요청을 보내면, 서버는 요청 하나당 **월드 전체 스냅샷**을 reliable로
+                //    답한다. 공장 게임처럼 엔티티가 수만 개인 월드에서는 그게 곧 대역폭 붕괴다.
+                //    실측으로도 한 번의 디싱크에 스냅샷이 3개 왔다(하나면 충분한 상황에서).
+                //
+                //    스냅샷이 도착하면 ApplySnapshot 경로가 이 플래그를 내린다. 그때까지는
+                //    불일치를 계속 "감지"하되 요청은 보내지 않는다 — 감지를 멈추면
+                //    HasHashMismatch()가 깜빡여서 디버그 표시가 쓸모없어진다.
+                if (!m_resyncRequestInFlight) {
+                    m_resyncRequestInFlight = network.SendResyncRequest(tick, localHash, remoteHash);
+                }
             }
             it = m_pendingTickHashes.erase(it);
         }
@@ -304,6 +340,9 @@ namespace EF {
             if (NetworkManager::DecodeWorldSnapshot(packet.payload, snapshot) && world.ApplySnapshot(snapshot)) {
                 m_hasSnapshot = true;
                 m_hasHashMismatch = false;
+
+                // 요청한 스냅샷이 도착했다. 다음 불일치에는 다시 요청할 수 있다.
+                m_resyncRequestInFlight = false;
                 m_lastSnapshotTick = snapshot.tick;
                 m_clientSimTick = snapshot.tick;
                 m_serverTickEstimate = snapshot.tick;
@@ -386,7 +425,7 @@ namespace EF {
             uint64_t lastKnownTick = 0;
             if (NetworkManager::DecodeWorldSnapshotRequest(packet.payload, lastKnownTick)) {
                 static_cast<void>(lastKnownTick);
-                network.SendWorldSnapshot(world.CreateSnapshot(tick), from);
+                network.SendWorldSnapshot(world.CreateSnapshot(SimulatedThroughTick(tick)), from);
             }
             break;
         }
@@ -412,7 +451,7 @@ namespace EF {
                 static_cast<void>(resyncTick);
                 static_cast<void>(localHash);
                 static_cast<void>(remoteHash);
-                network.SendWorldSnapshot(world.CreateSnapshot(tick), from);
+                network.SendWorldSnapshot(world.CreateSnapshot(SimulatedThroughTick(tick)), from);
             }
             break;
         }

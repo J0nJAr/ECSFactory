@@ -157,6 +157,12 @@ namespace EF {
         // 디버그 주입 플래그. DebugSkipNextConfirmedInputFrameOnce()만이 이걸 켠다.
         // 켜진 상태로 남지 않는다 — 다음 확정 프레임 하나를 건너뛰면서 스스로 꺼진다.
         bool m_debugSkipNextConfirmedFrame = false;
+
+        // ResyncRequest를 하나만 띄워 두기 위한 플래그.
+        // 디싱크가 나면 그 뒤 tick들도 줄줄이 어긋나는데, 그때마다 요청하면 서버가
+        // 요청마다 월드 전체 스냅샷을 reliable로 답해서 대역폭이 무너진다.
+        // 스냅샷을 적용하면 내려간다(VerifyPendingTickHashes / WorldSnapshot 처리 참조).
+        bool m_resyncRequestInFlight = false;
         uint64_t m_lastSnapshotTick = 0;
         uint64_t m_clientSimTick = 0;
         uint64_t m_serverTickEstimate = 0;
