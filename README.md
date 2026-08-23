@@ -34,6 +34,8 @@
 - 접속 handshake(`Hello → Welcome → TypeTable → WorldSnapshot`)를 `NetworkSyncSystem`이 fixed tick 안에서 처리
 - **결정론 입력 lockstep** — 클라가 미래 tick 입력을 제출하고, 서버가 확정(결측은 직전 입력 hold)해서 `InputFrame`으로 전 클라에 재전파하고, 모두가 같은 확정 입력으로 같은 시뮬을 돌림
 - `TickHash` 주기 송수신으로 디싱크 감지, 손실·재정렬 링크에서의 수렴 테스트
+- **렌더 계층 골격** — `EngineRender` 타깃 분리(서버는 DX11을 링크조차 하지 않고, CI가 임포트 DLL로 검사), `Win32Window`(메시지 펌프), DX11 device/swapchain/RTV, 런타임 셰이더 컴파일 + Dynamic VB로 **화면에 쿼드 하나**. `--frames N --capture x.ppm`으로 백버퍼를 파일로 뽑아 확인한다
+- UI 앵커 레이아웃 코어(순수 함수, 단위 테스트 11케이스). 그릴 수단이 아직 없어 화면엔 안 나온다
 
 > 초기 스케치에는 "락스텝보다는 서버 시간에 맞춰 클라가 입력 전달"이라고 적혀 있었지만,
 > 결국 **결정론 lockstep + 입력 릴레이**로 갔습니다. 이유는 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md) §1.2에 있습니다 —
@@ -43,10 +45,12 @@
 
 지금 순서는 **렌더링 → 엔진 위생 → 결정론 스폰 → 공장 게임플레이**입니다.
 
-1. **렌더링** (`docs/design/rendering-dx11.md` P0~P8) — Win32 창 → DX11 device → 쿼드 → 카메라 → `RenderSystem`.
+1. **렌더링 이어서** (`docs/design/rendering-dx11.md`) — 창·device·쿼드(R0~R3)는 끝났습니다. 남은 것은
+   **카메라(R4, ortho 투영으로 월드 좌표를 화면에 매핑)** → **`RenderSystem`(R5, `View<Transform, Renderable>`을 순회해 그리기)** → 보간(R7).
+   지금은 그릴 것을 `GameClient/main.cpp`가 하드코딩하고 있어 ECS와 화면이 연결되어 있지 않습니다.
    목표는 "내 키보드 입력이 서버 확정을 거쳐 화면 속 엔티티를 움직인다".
-2. **`InputManager` → `InputCommand` 변환** — 창이 생긴 뒤 바로. 지금은 테스트가 `QueueLocalInput`을 직접 호출 중.
-3. **엔진 위생** — `SystemRegistry::SortSystems()`(현재 TODO, 등록 순서대로 실행 중), 렌더를 별도 CMake 타깃으로 분리해 서버가 DX11을 링크하지 않게.
+2. **`InputManager` → `InputCommand` 변환** — 창이 생겼으므로 이제 가능합니다. 지금은 테스트가 `QueueLocalInput`을 직접 호출 중.
+3. **엔진 위생** — `SystemRegistry::SortSystems()`(현재 TODO, 등록 순서대로 실행 중). 렌더를 별도 CMake 타깃으로 분리하는 일은 R0에서 끝냈습니다.
 4. **결정론 스폰** — 건설 = 엔티티 스폰이라 공장 게임 전체의 전제조건입니다. `ApplySnapshot`이 `EntityManager` 상태(version / free list / next index)를 복원하지 않아 스냅샷 이후 index 할당이 갈라지던 문제는 **N1에서 해결**했고, 남은 것은 N2(스폰·디스폰을 확정 입력 경로에서만 일어나게 하기)입니다. [roadmap.md §6](docs/design/roadmap.md) 참조.
 5. **공장 게임플레이** — 그리드 좌표계 → 건설/철거 → 채굴기 → 벨트 → 저장고.
    첫 결승선: **아이템이 채굴기에서 저장고까지 자동으로 흐르고, 그게 화면에 보이고, 클라와 서버 해시가 일치한다.**

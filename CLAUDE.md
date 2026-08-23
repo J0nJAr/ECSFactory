@@ -107,8 +107,10 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -Rel
 
 - **[docs/design/roadmap.md](docs/design/roadmap.md) — 마일스톤 전체 계획.** 지금 무엇을 왜 그 순서로 만드는지가 여기 있다. "다음에 뭘 해야 하나"는 이 문서를 먼저 본다.
 - **[docs/reference/milestone-codes.md](docs/reference/milestone-codes.md) — 마일스톤 기호 사전.** `R2`·`N1`·`U8` 같은 기호가 무엇을 가리키고 지금 어떤 상태인지의 대조표. **이 기호는 저장소 안에서만 쓴다** — 블로그 글(`docs/blog/`)에는 뜻이 드러나는 말로 풀어 쓴다. 독자는 이 저장소를 볼 수 없다.
-- `docs/design/*.md` — 다음 에이전트·개발자를 대상으로 한 **핸드오프 스펙**: 근거, 불변식, 마일스톤 상태, 함정. 입력·동기화를 건드리기 전에 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)를, 렌더링을 시작하기 전에 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)를, UI를 건드리기 전에 [docs/design/ui-layer.md](docs/design/ui-layer.md)를 읽는다(뒤의 둘은 설계만 있고 코드는 아직 없다).
-- `docs/blog/*.md` — 각 계층을 만든 순서대로 쓴 서술형 기록(05 패킷 → 06 동기화 상태머신 → 07 신뢰성 UDP → 08 lockstep).
+- `docs/design/*.md` — 다음 에이전트·개발자를 대상으로 한 **핸드오프 스펙**: 근거, 불변식, 마일스톤 상태, 함정. 입력·동기화를 건드리기 전에 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)를, 렌더링을 건드리기 전에 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)를, UI를 건드리기 전에 [docs/design/ui-layer.md](docs/design/ui-layer.md)를 읽는다. 뒤의 둘은 **설계 대비 구현이 앞부분만 들어와 있다** — 렌더링은 R0~R3(창·device·쿼드), UI는 U3(앵커 레이아웃)까지다. 나머지는 아직 문서뿐이므로, 각 문서의 마일스톤 표에서 지금 어디까지 왔는지를 먼저 확인할 것.
+- `docs/blog/*.md` — 각 계층을 만든 순서대로 쓴 서술형 기록(05 패킷 → 06 동기화 상태머신 → 07 신뢰성 UDP → 08 lockstep → 09 결정론 스폰 → 10 렌더 타깃 분리·창 → 11 DX11 첫 픽셀).
+  - ⚠️ **`docs/blog/`에 있다고 발행된 것은 아니다.** 티스토리 발행은 붙여넣기 수동 작업이라 저장소가 앞서간다. 현재 발행분은 7편(`machamy.tistory.com/34`)까지고 **8~11편이 미발행**이다.
+  - 블로그 글을 쓰거나 고칠 때는 [docs/reference/writing-style.md](docs/reference/writing-style.md)의 문체 기준을 따르고 `python tools/check-writing-style.py --all-blog`로 검사한다. 설계 문서와 코드 주석은 이 기준의 대상이 아니다.
 
 `README.md`의 "작업 스케치" 섹션이 살아 있는 TODO 목록이다.
 
@@ -132,7 +134,9 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -Rel
 - **`View<With<...>, Without<...>>`**: 쿼리에 맞는 엔티티를 순회한다. 효율을 위해 **필수 풀 중 가장 작은 것**부터 시작한다. `view.ForEach([](EntityId, A&, B&){...})`(엔티티 인자는 선택)과 range-`for` 둘 다 된다.
 - **`World`** ([World.hpp](EngineCore/ECS/World.hpp)): `Registry` + `SystemRegistry` + 타입 키 **리소스 맵**의 조합. 리소스(`AddResource<T>` / `GetResource<T>`)는 월드별 싱글턴을 담는다 — `NetworkManager`가 이렇게 붙는다.
 
-`EngineCore/Render/`, `Feature/`, `Systems/`는 아직 빈 자리표시 디렉터리다.
+`EngineCore/Feature/`, `Systems/`는 아직 빈 자리표시 디렉터리다.
+
+> ⚠️ **디렉터리 위치와 CMake 타깃이 일치하지 않는다.** `EngineCore/Render/`, `EngineCore/Platform/`, `EngineCore/UI/`는 경로만 `EngineCore` 아래일 뿐 **`EngineRender` 타깃에 등록되어 있다**(둘 다 [EngineCore/CMakeLists.txt](EngineCore/CMakeLists.txt)에 있고, 두 번째 `target_sources` 블록이 `EngineRender`다). 파일을 추가할 때 어느 블록에 넣는지가 곧 "서버가 이걸 링크하는가"를 정한다.
 
 ### TypeInfo — index와 hash의 구분 ([TypeInfo.hpp](EngineCore/ECS/TypeInfo.hpp))
 
@@ -236,7 +240,9 @@ tick당 흐름:
 
 ## 코드베이스 현재 상태
 
-동작하고 테스트로 덮여 있는 것: ECS, 고정소수점 수학, 스냅샷·동기화, 다중 클라이언트 라우팅을 갖춘 신뢰성 UDP 전송, 결정론 입력 lockstep 루프(설계 문서의 M1~M7 완료. 시드 기반 손실·재정렬 링크에서의 수렴 테스트 포함).
+동작하고 테스트로 덮여 있는 것: ECS, 고정소수점 수학, 스냅샷·동기화, 다중 클라이언트 라우팅을 갖춘 신뢰성 UDP 전송, 결정론 입력 lockstep 루프(설계 문서의 M1~M7 완료. 시드 기반 손실·재정렬 링크에서의 수렴 테스트 포함), UI 앵커 레이아웃(U3. 순수 함수라 단위 테스트로 덮인다).
+
+동작하지만 **자동 테스트가 없는** 것: 렌더 계층(R0~R3). 창이 뜨고, DX11 device/swapchain이 서고, 화면에 쿼드 하나가 그려진다. device 생성이 GPU나 WARP를 요구해서 테스트 하네스로 감싸지 않았다. 대신 `GameClient.exe --frames 60 --capture shot.ppm`으로 백버퍼를 PPM으로 뽑아 눈으로 확인한다(`Dx11Renderer::CaptureBackBuffer`). 기준 이미지 비교는 아직 없다.
 
 아직 **미완성 / 스텁**인 것:
 
@@ -245,9 +251,11 @@ tick당 흐름:
 - **결정론 스폰/디스폰** 🟡 절반 완료 — 스냅샷이 `EntityManager` 상태(version / free list / next index)를 나르지 않던 문제는 해결됐다(N1). 남은 것은 **스폰·디스폰이 확정 입력 경로에서만 일어나게 하는 것**(N2)이다. 지금은 `NetworkSyncSystem`의 `Hello` 처리가 확정 입력 밖에서 `CreateEntity()`를 부른다. 건설·스폰이 필요한 작업 전에 정리할 것 — [roadmap.md §6](docs/design/roadmap.md).
 - ⚠️ **`World::ComputeHash()`가 풀을 프로세스 로컬 타입 인덱스 순서로 순회한다.** 타입을 처음 쓰는 순서가 다른 두 프로세스는 월드 내용이 같아도 다른 해시를 낸다(위의 index vs hash 규칙을 해시 함수 자신이 밟고 있다). 지금은 클라·서버가 같은 순서로 등록해서 드러나지 않을 뿐이다.
 - ⚠️ **`EntityManager::IsAlive`가 free list를 보지 않는다.** version만 비교하므로 "파괴됐지만 아직 재사용되지 않은 index"로 만든 id를 살아 있다고 판정한다. `View`가 dense 풀에서만 id를 뽑아 현재는 안 물리지만, 임의 index로 id를 만드는 코드를 추가하면 물린다.
-- 렌더링 계층 전체 — `docs/design/rendering-dx11.md`에 설계만 있고 구현은 없다.
+- **렌더링은 R3까지만.** 카메라(R4)가 없어서 `SetCamera`에 항등 행렬이 들어가고, 그리는 좌표가 월드 좌표가 아니라 NDC(-1..1)다. `RenderSystem`(R5)이 없어서 그릴 것을 [GameClient/main.cpp](GameClient/main.cpp)의 `BuildFrame`이 하드코딩한다 — ECS와 화면이 아직 연결되지 않았다. 보간(R7)도 없어서 50Hz 시뮬을 그대로 그린다.
+- **UI는 U3까지만.** 앵커 레이아웃 계산은 있지만 그걸 그릴 `UIDrawList`(U1)와 폰트(U2)가 없어서 화면에 UI가 나오지 않는다.
 - `SystemRegistry::SortSystems()`는 TODO. 시스템은 등록 순서대로 실행된다.
 
 ## 사용할 수 있는 스킬
 
 - `explain-diff-html` — 현재 diff / 브랜치 / PR을 배경·직관·코드 워크스루·퀴즈 5문항으로 설명하는 자체완결형 HTML을 만든다. 출력은 `~/Documents/explanations/YYYY-MM-DD-explanation-<slug>.html`(저장소 밖). 학습용 프로젝트이므로 큰 변경을 끝낸 뒤 이걸로 복습 자료를 만들면 좋다.
+- `blog-post` — 개발 기록을 "[C++ ECS 게임 만들기]" 시리즈의 다음 편으로 쓴다. 정본은 `docs/blog/NN_slug.md`, 티스토리 붙여넣기용은 `.claude/tmp/blog-NN-tistory.md`. 설계 문서와 목적이 다르다 — 설계 문서는 다음 사람이 이어서 구현하기 위한 스펙이고, 블로그는 만든 순서대로 읽는 서술형 기록이다. **코드를 직접 읽어 사실 확인을 하고**, [writing-style.md](docs/reference/writing-style.md) 기준을 `tools/check-writing-style.py`로 검사한 뒤 커밋한다.

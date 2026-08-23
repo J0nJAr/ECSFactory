@@ -17,7 +17,13 @@ namespace EF {
     // MinGW(msys2 ucrt64)에서 WRL은 기대대로 잡히지 않는 경우가 있다.
     // (docs/design/rendering-dx11.md §6)
     //
-    // 현재 상태: R0 — 스텁이다. 실제 device/swapchain 생성은 R2에서 들어온다.
+    // 현재 상태: R3까지 구현됨. device/swapchain/RTV(R2), 런타임 셰이더 컴파일 + Dynamic VB로
+    // 쿼드를 그리는 것(R3)까지 동작한다.
+    //
+    // 아직 없는 것:
+    //  - 카메라. SetCamera에 항등 행렬이 들어오면 좌표계가 NDC(-1..1)가 된다. ortho 투영은 R4.
+    //  - 텍스처·인덱스 버퍼. 지금은 컬러 쿼드만 그리고, 정점 6개를 그대로 밀어 넣는다.
+    //  - 깊이 버퍼. 2D 단계라 만들지 않았다(RTV만 바인딩한다).
     class Dx11Renderer final : public IRenderer {
     public:
         Dx11Renderer();
