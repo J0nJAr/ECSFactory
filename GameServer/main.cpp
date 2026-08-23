@@ -1,5 +1,6 @@
 #include "Base/IGameApp.hpp"
 #include "Base/Logger.hpp"
+#include "Components/PlayerControl.hpp"
 #include "Components/Transform.hpp"
 #include "Components/Velocity.hpp"
 #include "Network/NetworkManager.hpp"
@@ -11,9 +12,18 @@
 using namespace EF;
 
 namespace {
+    // 스냅샷으로 클라이언트에 실어 보낼 컴포넌트 목록.
+    //
+    // PlayerControl이 여기 있어야 하는 이유: 서버는 Hello를 받을 때 그 클라이언트의
+    // 플레이어 엔티티에 PlayerControl{clientId}를 붙인다(NetworkSyncSystem). 이 컴포넌트가
+    // 스냅샷을 타고 클라이언트까지 가야, 클라이언트의 ApplyConfirmedInputs도 "이 clientId의
+    // 입력은 이 엔티티에"라는 같은 매칭을 할 수 있다. 빠지면 클라이언트 쪽
+    // View<Transform, PlayerControl>이 비어서 확정 입력이 아무 데도 적용되지 않고,
+    // 서버만 움직이는 상태 — 즉 즉각적인 디싱크가 된다.
     void RegisterNetworkSnapshotComponents(World& world) {
         world.RegisterSnapshotComponent<Transform>();
         world.RegisterSnapshotComponent<Velocity>();
+        world.RegisterSnapshotComponent<PlayerControl>();
     }
 }
 

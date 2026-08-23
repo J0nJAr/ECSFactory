@@ -335,6 +335,17 @@ World::ApplySnapshot()      → Registry newRegistry;   ← 완전히 새 Regist
 
 **완료 기준:** 확정 입력의 버튼 비트로 엔티티를 스폰하는 테스트에서, 서버와 N개 클라의 `ComputeHash()`가 계속 일치한다(손실 링크 위에서도).
 
+#### ⚠️ 현재 상태 — Hello 스폰이 이제 해시를 실제로 바꾼다
+
+접속한 클라이언트에게 조종할 대상을 주기 위해, `NetworkSyncSystem`의 `Hello` 처리가 만드는 엔티티에 `Transform` + `PlayerControl{clientId}`를 붙였다(`SpawnPlayerEntity`). 스폰 위치는 `clientId`에서만 유도한다 — x = (clientId − 1) × 6, y = z = 0, 값은 전부 `Fixed64::FromInt`. 난수도 접속 시각도 쓰지 않으므로 스냅샷을 받은 클라이언트가 같은 값을 그대로 재현한다.
+
+이 변경으로 N2의 구멍이 **더 크게 드러났다.** 예전에는 컴포넌트가 하나도 없는 빈 엔티티라 `ComputeHash()`에 아무 영향이 없었지만(엔티티 상태는 일부러 해시에서 빼 두었으므로), 이제는 새 클라이언트가 접속할 때마다 서버 월드의 컴포넌트 풀이 즉시 바뀐다. 귀결:
+
+- 이미 접속해 있던 클라이언트는 다음 `TickHash`에서 불일치를 보고 `ResyncRequest` → 전체 스냅샷으로 뒤늦게 따라잡는다. **접속 한 번마다 기존 전원이 리싱크한다.** 결국 수렴하므로 테스트는 통과하지만, 설계대로 동작하는 것은 아니다.
+- `CreateEntity()`가 서버에서만 호출되므로 `EntityManager` 할당 상태도 계속 갈라진다. 리싱크가 덮어 주는 구간 밖에서는 언제든 디싱크다.
+
+즉 N2는 이제 "나중에 하면 좋은 정리"가 아니라 **접속마다 대가를 치르고 있는 빚**이다. 코드 자리의 경고는 `EngineCore/Network/NetworkSyncSystem.cpp`의 `SpawnPlayerEntity` 헤더 주석에 있다.
+
 ---
 
 ## 7. 트랙 G — 공장 게임플레이

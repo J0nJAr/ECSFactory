@@ -1,5 +1,7 @@
 #include "NetworkSyncSystem.hpp"
 
+#include "Components/PlayerControl.hpp"
+#include "Components/Transform.hpp"
 #include "Gameplay/PlayerMovement.hpp"
 
 namespace EF {
@@ -11,6 +13,65 @@ namespace EF {
         // 50Hz 기준 128 tick ≈ 2.5초로, 입력 지연(2 tick) + 왕복 지연 + 재전송(4 tick 간격)을
         // 다 합쳐도 한참 남는 창이다. 이보다 오래 밀린 TickHash는 비교해봐야 의미가 없다.
         constexpr std::size_t kLocalHashHistoryTicks = 128;
+
+        // 접속 순서대로 플레이어를 x축에 늘어놓을 때의 간격(월드 유닛).
+        //
+        // 6을 고른 근거: ApplyConfirmedInputs의 이동 스텝이 tick당 1유닛이므로, 6유닛은
+        // "6 tick(50Hz에서 약 0.12초) 동안 한 방향으로 밀어야 옆 사람 자리에 닿는" 거리다.
+        // 스폰 직후 서로 겹쳐 보이지 않을 만큼은 떨어져 있고, 화면 밖으로 나갈 만큼
+        // 멀지도 않다. 렌더 카메라가 정해지면 다시 조정할 값이다.
+        constexpr int32_t kPlayerSpawnSpacingUnits = 6;
+
+        /**
+         * 접속한 클라이언트가 조종할 플레이어 엔티티를 서버 월드에 만든다.
+         *
+         * 붙이는 컴포넌트는 둘이다.
+         *  - `PlayerControl{clientId}` — `ApplyConfirmedInputs`가 확정 입력을 이 엔티티에
+         *    매칭하는 키. 이게 없으면 접속한 클라이언트는 조종할 대상이 없다.
+         *  - `Transform` — 이동 결과가 실리는 곳이자, 렌더가 읽는 유일한 위치 정보.
+         *
+         * 스폰 위치는 **clientId에서만** 유도한다(= x축으로 kPlayerSpawnSpacingUnits씩).
+         * 난수도, 접속 시각도, float도 쓰지 않는다 — 스냅샷을 받은 클라이언트가 같은 값을
+         * 재현할 수 있어야 하고, 값 자체도 `Fixed64::FromInt`로만 만들어야 하기 때문이다.
+         * 전원이 원점에 겹쳐 나오면 화면에서 구별이 안 되므로 겹치지 않게 벌린다.
+         *
+         * ⚠️⚠️ **함정 — 이 스폰은 확정 입력 경로 밖에서 일어난다(roadmap.md §6, N2 미완료).**
+         *
+         * 여기는 `Hello` 패킷을 받은 "그 순간"이고, 그 시점은 서버만 안다. lockstep의 대전제는
+         * "서버와 모든 클라이언트가 같은 tick에 같은 일을 한다"인데 이 스폰은 그 밖에 있다.
+         * 구체적으로 무엇이 어긋나는가:
+         *
+         *  1. 새 클라이언트가 붙으면 서버 월드가 즉시 바뀌지만, 그 변화는 어떤 peer에게도
+         *     릴레이되지 않는다. 이미 접속해 있던 클라이언트는 다음 `TickHash`에서 불일치를
+         *     보고 `ResyncRequest` → 전체 스냅샷으로 뒤늦게 따라잡는다. 즉 **접속 한 번마다
+         *     기존 전원이 리싱크한다.** 지금은 "결국 수렴하니까" 넘어가고 있는 것이지,
+         *     설계대로 동작하는 게 아니다.
+         *  2. 더 나쁜 건 `EntityManager` 상태다. `CreateEntity()`는 다음 index와 free list를
+         *     소비한다. 서버만 이 호출을 하면 서버와 클라의 할당 상태가 갈라지고, 그 뒤로
+         *     **같은 확정 입력으로 스폰해도 서로 다른 EntityId가 나온다.** 스냅샷이
+         *     `EntityManager` 상태까지 나르도록 고쳐 둔 덕(N1)에 리싱크로 덮이지만,
+         *     리싱크 없이 굴러가는 구간에서는 언제든 디싱크가 된다.
+         *  3. 같은 이유로 `World::ComputeHash()`는 아직 `EntityManager` 상태를 해시에 넣지
+         *     못한다(World.hpp의 주석 참조). 디싱크 탐지를 일부러 무디게 해 둔 상태다.
+         *
+         * 제대로 된 자리는 "접속을 확정 입력 스트림에 실리는 결정론 이벤트로 만들고, 서버와
+         * 모든 클라가 같은 tick에 같은 스폰을 실행"하는 것이다 — roadmap.md §6의 N2.
+         * 그때까지 이 함수는 **알려진 구멍**이다. 여기에 스폰 로직을 더 얹지 말 것.
+         */
+        void SpawnPlayerEntity(World& world, uint32_t clientId, EntityId entity) {
+            // clientId는 1부터 발급된다(NetworkManager::AllocateClientId). 첫 클라가 원점에
+            // 서도록 1을 빼서 슬롯 번호로 바꾼다. int32_t 승격은 FromInt의 인자 타입에 맞추기
+            // 위한 것이고, 오버플로 걱정이 필요한 규모의 clientId는 이 게임에 나오지 않는다.
+            const int32_t spawnSlot = static_cast<int32_t>(clientId) - 1;
+
+            world.AddComponent<Transform>(entity, Transform{
+                .position = Vector3(Fixed64::FromInt(spawnSlot * kPlayerSpawnSpacingUnits),
+                                    Fixed64::Zero(),
+                                    Fixed64::Zero()),
+                .rotation = Quaternion::Identity()
+            });
+            world.AddComponent<PlayerControl>(entity, PlayerControl{ .clientId = clientId });
+        }
     }
 
     NetworkSyncSystem::NetworkSyncSystem(NetworkSyncMode mode)
@@ -299,6 +360,11 @@ namespace EF {
                 if (clientId == 0) {
                     clientId = network.AllocateClientId();
                     const EntityId controlledEntity = world.CreateEntity();
+
+                    // ⚠️ 확정 입력 경로 밖에서 월드를 바꾸는 자리다. 위험의 전모는
+                    //    SpawnPlayerEntity의 헤더 주석과 docs/design/roadmap.md §6(N2)에 있다.
+                    SpawnPlayerEntity(world, clientId, controlledEntity);
+
                     NetworkClientState& client = network.RegisterClient(clientId, controlledEntity, from);
                     client.hasTypeTable = true;
                 }
