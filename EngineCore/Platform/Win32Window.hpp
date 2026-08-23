@@ -68,6 +68,12 @@ namespace EF {
         [[nodiscard]] uint32_t Width() const override;
         [[nodiscard]] uint32_t Height() const override;
 
+        // 포그라운드 창이 이 창인지로 판정한다.
+        // WM_SETFOCUS/WM_KILLFOCUS로 상태를 들고 있는 방법도 있지만, 그러면 상태가
+        // 하나 더 늘고 두 창이 동시에 "내가 포커스"라고 믿는 순간이 생길 수 있다.
+        // OS에 매번 묻는 쪽이 진실에 가깝고, 이 호출은 프레임당 한 번이라 싸다.
+        [[nodiscard]] bool HasFocus() const override;
+
         bool ConsumeResized() override;
 
     private:

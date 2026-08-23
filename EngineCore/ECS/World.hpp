@@ -6,6 +6,7 @@
 #include <memory>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -76,6 +77,10 @@ namespace EF {
         SystemRegistry m_systems;
         std::unordered_map<TypeHash, std::unique_ptr<void, void(*)(void*)>> m_resources;
         std::unordered_map<TypeHash, std::function<bool(Registry&, const ComponentSnapshot&)>> m_snapshotAppliers;
+
+        // ComputeHash에서 제외할 타입들(클라이언트 전용 표현 컴포넌트).
+        // RegisterPresentationComponent 주석 참조.
+        std::unordered_set<TypeHash> m_presentationTypes;
 
     public:
         EntityId CreateEntity() {
@@ -159,10 +164,32 @@ namespace EF {
             return *static_cast<T*>(it->second.get());
         }
 
-        /// @brief 해당 타입의 스냅샷 컴포넌트를 등록한다. 
+        /// @brief 이 타입을 **결정론 해시에서 제외**한다. 클라이언트 전용 표현 컴포넌트용.
+        ///
+        /// ⚠️ 이게 왜 필요한가 (모르면 무한 resync에 빠진다):
+        ///
+        /// `ComputeHash()` 는 trivially-copyable 풀을 **전부** 섞는다. 그런데 클라이언트에는
+        /// 서버에 없는 컴포넌트가 붙는다 — `Renderable` 처럼 "어떻게 그릴 것인가"를 담는 것들이다.
+        /// 그 풀이 해시에 들어가면 클라 해시가 서버 해시와 **매 tick 어긋나고**, `TickHash`
+        /// 비교가 이걸 디싱크로 읽어 `ResyncRequest` 를 보낸다. 새 스냅샷이 와서 레지스트리가
+        /// 교체되고, 표현 컴포넌트가 다시 붙고, 또 어긋난다. 화면은 멀쩡해 보이는데 네트워크가
+        /// 스냅샷을 계속 실어 나르는 상태가 된다.
+        ///
+        /// 제외해도 안전한 이유: 이 컴포넌트들은 **어떤 peer의 시뮬레이션에도 영향을 주지 않는다.**
+        /// 색과 크기가 클라마다 달라도 게임 상태는 같다. 해시가 지켜야 하는 것은
+        /// "모든 peer의 시뮬레이션이 일치하는가"이지 "모든 peer가 똑같이 생겼는가"가 아니다.
+        ///
+        /// ⚠️ 반대로 **시뮬레이션에 영향을 주는 컴포넌트를 여기 등록하면 안 된다.**
+        ///    그러면 디싱크가 나도 해시가 조용해서 영영 못 잡는다. 기본값은 "해시에 포함"이고
+        ///    이 함수는 명시적인 예외 선언이다.
+        template<typename T>
+        void RegisterPresentationComponent() {
+            m_presentationTypes.insert(GetTypeInfo<T>().hash);
+        }
+
+        /// @brief 해당 타입의 스냅샷 컴포넌트를 등록한다.
         /// 스냅샷 컴포넌트는 네트워크 동기화 시에만 사용되며,
         /// 반드시 비트 복사가능(trivially copyable)이어야 한다.
-        /// @tparam T 
         template<typename T>
         void RegisterSnapshotComponent() {
             static_assert(std::is_trivially_copyable_v<T>, "Snapshot components must be trivially copyable.");
@@ -328,6 +355,13 @@ namespace EF {
                 }
 
                 const TypeInfo& type = pool->GetType();
+
+                // 표현 전용 컴포넌트는 시뮬레이션 상태가 아니므로 건너뛴다.
+                // 자세한 이유는 RegisterPresentationComponent 주석에 있다.
+                if (m_presentationTypes.contains(type.hash)) {
+                    continue;
+                }
+
                 mixUInt64(type.hash);
                 mixUInt64(static_cast<uint64_t>(type.size));
 

@@ -1,12 +1,14 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <string>
 
 #include "Base/IGameApp.hpp"
 #include "Base/Logger.hpp"
 #include "Components/PlayerControl.hpp"
+#include "Gameplay/InputMapping.hpp"
 #include "Components/Transform.hpp"
 #include "Components/Velocity.hpp"
 #include "Network/INetworkConnection.hpp"
@@ -14,6 +16,15 @@
 #include "Network/NetworkManager.hpp"
 #include "Network/NetworkSyncSystem.hpp"
 #include "Network/UDPConnection.hpp"
+
+// ⚠️ InputManager.hpp 는 헤더에서 <windows.h> 를 include한다. 그리고 windows.h 는
+//    winsock2.h 보다 **먼저** 들어오면 안 된다(winsock1과 충돌하며 경고를 낸다).
+//    그래서 Winsock을 끌고 오는 Network 헤더들 **뒤에** 둔다.
+//
+//    include 순서에 의존하는 상태는 그 자체로 함정이다. 근본 해결은 InputManager가
+//    Win32Window처럼 windows.h 를 .cpp 안으로 숨기는 것이고(Platform/Win32Window.hpp
+//    주석에 같은 논지가 있다), 트랙 I에서 입력을 창 메시지 기반으로 옮길 때 같이 정리한다.
+#include "Base/InputManager.hpp"
 #include "Platform/Win32Window.hpp"
 #include "Render/Camera.hpp"
 #include "Render/RenderSystem.hpp"
@@ -37,6 +48,12 @@ namespace {
         world.RegisterSnapshotComponent<Transform>();
         world.RegisterSnapshotComponent<Velocity>();
         world.RegisterSnapshotComponent<PlayerControl>();
+
+        // ⚠️ Renderable은 스냅샷 대상이 아니면서 **해시에서도 빠져야 한다.**
+        //    서버에는 이 풀이 아예 없으므로, 클라 해시에 섞이면 매 tick 불일치가 나고
+        //    TickHash 비교가 그걸 디싱크로 읽어 무한 resync에 빠진다.
+        //    (World::RegisterPresentationComponent 주석에 전체 시나리오가 있다.)
+        world.RegisterPresentationComponent<Renderable>();
     }
 
     // clientId에서 눈에 띄게 다른 색을 만든다.
@@ -73,11 +90,19 @@ namespace {
 
         // Without<Renderable>로 "아직 안 붙은 것만" 뽑는다.
         // 이 ECS에는 HasComponent가 없다 — 조회는 전부 뷰를 통한다.
+        //
+        // ⚠️ ForEach가 아니라 range-for를 쓴다. **둘이 넘겨주는 엔티티 값의 타입이 다르다.**
+        //    ForEach는 version이 없는 EntityIndex를 주고, 그걸 EntityId로 받아도
+        //    암묵 변환 때문에 컴파일이 통과한다. 그러면 version 0인 가짜 id가 만들어져
+        //    재사용된 index에서 AddComponent의 IsAlive 단언이 터진다.
+        //    반복자 경로는 ResolveEntityId를 거쳐 제대로 된 EntityId를 준다.
+        //    (ECS/View.hpp 클래스 주석 참조)
         std::vector<std::pair<EntityId, uint32_t>> pending;
-        auto view = world.CreateView<Transform, PlayerControl>(Without<Renderable>{});
-        view.ForEach([&](EntityId entity, Transform&, PlayerControl& control) {
+        for (auto [entity, transform, control] :
+             world.CreateView<Transform, PlayerControl>(Without<Renderable>{})) {
+            static_cast<void>(transform);
             pending.emplace_back(entity, control.clientId);
-        });
+        }
 
         // 순회 중에 컴포넌트를 추가하면 풀이 재할당되어 순회가 무효가 된다.
         // 그래서 모아 두고 밖에서 붙인다.
@@ -88,6 +113,27 @@ namespace {
             });
         }
     }
+
+    // EnsurePlayerVisuals를 **시스템으로** 돌린다.
+    //
+    // ⚠️ 왜 앱 루프에서 부르면 안 되는가 (한 프레임 깜빡임의 원인이었다):
+    //    한 번의 ManualStepFrame 안에서 순서가 이렇다.
+    //        FixedUpdate들 → (여기서 ApplySnapshot이 레지스트리를 교체 = Renderable 전멸)
+    //        FrameUpdate들 → (여기서 RenderSystem이 그린다)
+    //    앱 루프에서 ManualStepFrame **전에** 붙이면, 스냅샷이 온 프레임에는
+    //    "붙임 → 전멸 → 그리기" 순서가 되어 그 프레임이 통째로 빈 화면이 된다.
+    //    실제로 캡처가 그 프레임에 걸려서 플레이어가 사라진 적이 있다.
+    //
+    //    시스템으로 두고 RenderSystem보다 **먼저 등록**하면 같은 FrameUpdate 안에서
+    //    "전멸 → 붙임 → 그리기"가 되어 깜빡임이 없어진다.
+    //    (SystemRegistry::SortSystems가 아직 TODO라 등록 순서가 곧 실행 순서다.)
+    class PlayerVisualSystem final : public ISystem {
+    public:
+        void Initialize(World&) override {}
+        void FixedUpdate(World&, Fixed64, uint64_t) override {}
+        void FrameUpdate(World& world, float) override { EnsurePlayerVisuals(world); }
+        void Shutdown(World&) override {}
+    };
 }
 
 class GameClientApplication : public GameAppBase {
@@ -141,6 +187,46 @@ public:
         m_frameLimit = frames;
     }
 
+    // 스크립트 입력을 설정한다. 형식: "tick:키들,tick:키들,..." (예: "20:W,80:WD,140:")
+    //
+    // 왜 필요한가: 실제 키보드로 하는 검증은 **창 포커스에 묶여 있다.** 창이 둘이면
+    // OS가 어느 쪽에 키를 줄지 사람이 정해야 하고, 자동화 스크립트에서
+    // SetForegroundWindow 는 신뢰할 수 없다. 그래서 사람 없이 돌리는 검증이 불가능해진다.
+    //
+    // 이건 "가짜 키보드"다. 지정한 tick에 지정한 버튼 마스크를 그대로 큐에 넣는다.
+    // tick 기준이라 프레임률과 무관하게 **매번 같은 결과**가 나온다 — 그게 이 기능의 요점이다.
+    // 실제 키보드 경로(CollectLocalInput)와 같은 QueueLocalInput 을 쓰므로,
+    // 검증하는 경로가 실제 경로와 다르지 않다.
+    void SetInputScript(const std::string& script) {
+        m_inputScript.clear();
+        std::size_t pos = 0;
+        while (pos < script.size()) {
+            const std::size_t comma = script.find(',', pos);
+            const std::string entry = script.substr(pos, comma - pos);
+            pos = (comma == std::string::npos) ? script.size() : comma + 1;
+
+            const std::size_t colon = entry.find(':');
+            if (colon == std::string::npos) {
+                continue;
+            }
+
+            const uint64_t tick = std::strtoull(entry.substr(0, colon).c_str(), nullptr, 10);
+            uint64_t mask = 0;
+            for (char key : entry.substr(colon + 1)) {
+                switch (key) {
+                case 'W': case 'w': mask |= kInputMoveForward; break;
+                case 'S': case 's': mask |= kInputMoveBack;    break;
+                case 'A': case 'a': mask |= kInputMoveLeft;    break;
+                case 'D': case 'd': mask |= kInputMoveRight;   break;
+                default: break;
+                }
+            }
+            m_inputScript[tick] = mask;
+        }
+        m_hasInputScript = !m_inputScript.empty();
+        LOG_INFO("입력 스크립트 {}개 항목을 읽었다.", m_inputScript.size());
+    }
+
     // 마지막 프레임의 백버퍼를 이 경로에 덤프한다. 비어 있으면 안 한다.
     void SetCapturePath(std::string path) {
         m_capturePath = std::move(path);
@@ -181,6 +267,10 @@ protected:
             return 1;
         }
 
+        // 키 상태 배열을 0으로 깔아 둔다. 안 하면 첫 프레임의 "방금 눌렀는가" 판정이
+        // 초기화되지 않은 이전 상태와 비교된다.
+        Input::Initialize();
+
         Dx11Renderer renderer;
         if (!renderer.Initialize(window)) {
             LOG_ERROR("렌더러 초기화 실패.");
@@ -193,6 +283,9 @@ protected:
         //    RenderSystem::Initialize가 아무것도 하지 않도록 만들어 둔 이유가 이것이다.
         //    나중에 여기서 GPU 리소스를 잡아야 해지면 등록 시점을 다시 봐야 한다.
         if (m_clientWorld != nullptr) {
+            // ⚠️ 순서가 중요하다. 표현 컴포넌트를 붙이는 시스템이 렌더보다 **먼저** 와야
+            //    스냅샷을 받은 프레임에도 화면이 비지 않는다(PlayerVisualSystem 주석 참조).
+            m_clientWorld->RegisterSystem<PlayerVisualSystem>();
             m_clientWorld->RegisterSystem<RenderSystem>(renderer, m_camera, window);
         } else {
             LOG_ERROR("클라이언트 월드가 없다. 렌더 시스템을 붙일 곳이 없다.");
@@ -207,8 +300,8 @@ protected:
                 renderer.Resize(window.Width(), window.Height());
             }
 
-            // 스냅샷이 레지스트리를 갈아치우면 표현 컴포넌트가 날아간다. 매 프레임 다시 붙인다.
-            EnsurePlayerVisuals(*m_clientWorld);
+            Input::Update();
+            CollectLocalInput(engine, window);
 
             const auto now = std::chrono::steady_clock::now();
             const auto deltaUs = std::chrono::duration_cast<std::chrono::microseconds>(now - previous).count();
@@ -244,6 +337,71 @@ protected:
     }
 
 private:
+    // 실제 키보드를 lockstep 경로에 넣는다. tick당 최대 하나.
+    //
+    // ⚠️ **프레임이 아니라 tick 단위로 넣는다.** 이 루프는 모니터 주사율(보통 60~144Hz)로
+    //    도는데 시뮬레이션은 50Hz다. 프레임마다 넣으면 같은 applyTick을 겨냥한 입력이
+    //    여러 개 쌓이고, 서버는 그 tick의 빈 슬롯 하나만 채우므로 나머지는 버려진다.
+    //    대역폭만 쓰고 얻는 게 없다.
+    //
+    // ⚠️ 포커스가 없으면 넣지 않는다. Input은 GetAsyncKeyState 기반이라 시스템 전역
+    //    키 상태를 읽는다 — 걸러내지 않으면 창 두 개가 한 번의 키 입력에 같이 반응한다.
+    //
+    // 입력은 여기서 "제출"될 뿐 여기서 적용되지 않는다. 서버가 tick을 확정해 되뿌린
+    // 뒤에야 모든 peer가 같은 tick에 같은 입력을 적용한다. 그게 lockstep이고,
+    // 그래서 클라는 자기 입력조차 왕복 시간만큼 늦게 본다(예측·롤백은 아직 없다).
+    void CollectLocalInput(GameEngine& engine, const IWindow& window) {
+        if (m_clientSync == nullptr) {
+            return;
+        }
+
+        const uint64_t tick = engine.GetCurrentTick();
+        if (tick == m_lastInputTick) {
+            return;
+        }
+        m_lastInputTick = tick;
+
+        // 스크립트가 있으면 실제 키보드 대신 그걸 쓴다.
+        // 포커스도 보지 않는다 — 사람 없이 돌리는 것이 목적이기 때문이다.
+        if (m_hasInputScript) {
+            // 지정된 tick의 항목이 있으면 그 마스크로 갱신한다. 없으면 직전 마스크를 유지한다
+            // ("W를 20틱에 누르고 80틱에 뗀다"를 두 항목으로 표현할 수 있게).
+            if (auto it = m_inputScript.find(tick); it != m_inputScript.end()) {
+                m_scriptedMask = it->second;
+            }
+            if (m_scriptedMask != 0) {
+                InputCommand scripted{};
+                scripted.buttonMask = m_scriptedMask;
+                m_clientSync->QueueLocalInput(scripted);
+            }
+            return;
+        }
+
+        if (window.HasFocus() && !m_loggedFocus) {
+            m_loggedFocus = true;
+            LOG_INFO("창이 포커스를 얻었다. 이제부터 키 입력을 서버로 보낸다.");
+        }
+
+        if (!window.HasFocus()) {
+            // 포커스를 잃은 동안은 입력을 보내지 않는다. 서버는 결측 입력을
+            // "직전 입력 hold"로 대체하므로, 누르고 있던 방향으로 계속 가는 게 아니라
+            // 마지막으로 보낸 상태가 유지된다. 창을 떠나기 전에 키를 뗐다면 멈춘다.
+            return;
+        }
+
+        const uint64_t buttonMask = BuildButtonMask(&Input::GetKey);
+        if (buttonMask != 0 && !m_loggedFirstInput) {
+            m_loggedFirstInput = true;
+            LOG_INFO("첫 이동 입력 감지 (buttonMask=0x{:X}). 서버 확정을 거쳐 돌아온다.", buttonMask);
+        }
+
+        InputCommand command{};
+        command.buttonMask = buttonMask;
+        // clientId / tick / sequence 는 NetworkSyncSystem이 채운다
+        // (서버 tick 추정 + kInputDelayTicks). 여기서 정하면 추정 로직이 두 곳으로 갈린다.
+        m_clientSync->QueueLocalInput(command);
+    }
+
     // 창 제목에 결정론 상태를 찍는다.
     //
     // 왜 창 제목인가: 클라이언트 둘을 나란히 띄워 놓고 **같은 tick에서 해시가 같은지**를
@@ -367,6 +525,14 @@ private:
     std::string m_lastTitle;
     bool m_loggedWelcome = false;
     bool m_loggedSnapshot = false;
+    uint64_t m_lastInputTick = UINT64_MAX;
+    bool m_loggedFocus = false;
+    bool m_loggedFirstInput = false;
+
+    // tick → 버튼 마스크. 스크립트 입력(가짜 키보드)용.
+    std::map<uint64_t, uint64_t> m_inputScript;
+    bool m_hasInputScript = false;
+    uint64_t m_scriptedMask = 0;
     uint64_t m_frameLimit = 0;
     std::string m_capturePath;
 };
@@ -389,6 +555,10 @@ int main(int argc, char** argv) {
         } else if (arg == "--join" && hasNext) {
             // 원격 dedicated server에 붙는다. 결정론 확인은 이 모드로 창을 둘 띄워서 한다.
             app.SetMode(GameClientApplication::Mode::Join, argv[++i]);
+        } else if (arg == "--input-script" && hasNext) {
+            // 가짜 키보드. "20:W,80:" = tick 20부터 앞으로, tick 80에 정지.
+            // 포커스에 묶이지 않아 사람 없이 결정론 검증을 돌릴 수 있다.
+            app.SetInputScript(argv[++i]);
         } else if (arg == "--single") {
             // 같은 프로세스 안에 서버 월드를 두고 인메모리로 연결한다.
             app.SetMode(GameClientApplication::Mode::SinglePlayer);

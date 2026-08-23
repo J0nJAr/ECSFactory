@@ -46,6 +46,18 @@ namespace EF {
         [[nodiscard]] virtual uint32_t Width() const = 0;
         [[nodiscard]] virtual uint32_t Height() const = 0;
 
+        // 이 창이 지금 키보드 입력을 받는 창인가.
+        //
+        // ⚠️ 이게 없으면 창을 여러 개 띄운 순간 조작이 뒤엉킨다.
+        //    현재 입력 계층(Base/InputManager.hpp)은 GetAsyncKeyState를 쓰는데,
+        //    그건 **프로세스가 아니라 시스템 전역의 키 상태**다. 창 두 개를 띄워 놓고
+        //    한쪽에서 W를 누르면 두 클라이언트가 동시에 입력을 보낸다.
+        //    그래서 입력을 수집하는 쪽이 이 함수로 걸러야 한다.
+        //
+        //    근본 해결은 창 메시지(WM_KEYDOWN/WM_CHAR) 기반 입력으로 옮기는 것이고,
+        //    그건 트랙 U6(콘솔 문자 입력)에서 어차피 필요해진다. 그때까지의 임시 방편이다.
+        [[nodiscard]] virtual bool HasFocus() const = 0;
+
         // 마지막 호출 이후 창 크기가 바뀌었는지. true면 렌더러가 Resize를 해야 한다.
         //
         // 조회하면 플래그가 내려가는 "소비형"이다. 상태를 남겨두면

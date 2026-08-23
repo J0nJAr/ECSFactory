@@ -172,6 +172,9 @@ namespace {
         [[nodiscard]] uint32_t Width() const override { return m_width; }
         [[nodiscard]] uint32_t Height() const override { return m_height; }
         bool ConsumeResized() override { return false; }
+        [[nodiscard]] bool HasFocus() const override { return hasFocus; }
+
+        bool hasFocus = true;
 
         // 마지막으로 설정된 제목을 들고만 있는다. 실제 창이 없으므로 OS 호출이 없다.
         void SetTitle(const char* title) override {
@@ -307,4 +310,44 @@ TEST_CASE(Render, SystemBuildsCameraMatrixFromWindowAspect) {
 
     EXPECT_NDC(EF::ProjectPoint(renderer.lastViewProjection, EF::Float3{ 20.0f, 0.0f, 0.0f }), 1.0f, 0.0f);
     EXPECT_NDC(EF::ProjectPoint(renderer.lastViewProjection, EF::Float3{ 0.0f, 0.0f, 10.0f }), 0.0f, 1.0f);
+}
+
+// 클라이언트 전용 표현 컴포넌트는 결정론 해시를 바꾸면 안 된다.
+//
+// 이게 깨지면 증상이 고약하다. 서버에는 Renderable 풀이 없으므로 클라 해시가 매 tick
+// 어긋나고, TickHash 비교가 그걸 디싱크로 읽어 resync를 요청한다. 새 스냅샷이 와서
+// 레지스트리가 교체되고, 표현 컴포넌트가 다시 붙고, 또 어긋난다 — 화면은 멀쩡한데
+// 네트워크가 스냅샷만 실어 나른다.
+TEST_CASE(Render, PresentationComponentsDoNotAffectDeterminismHash) {
+    EF::World world;
+    world.RegisterPresentationComponent<EF::Renderable>();
+
+    const EF::EntityId entity = world.CreateEntity();
+    world.AddComponent<EF::Transform>(entity, EF::Transform{
+        .position = EF::Vector3(1, 0, 2),
+        .rotation = EF::Quaternion::Identity()
+    });
+
+    const uint64_t withoutVisual = world.ComputeHash();
+
+    world.AddComponent<EF::Renderable>(entity, EF::Renderable{
+        .color = EF::Color::White(),
+        .size = EF::Float2{ 4.0f, 4.0f }
+    });
+
+    EXPECT_EQ(world.ComputeHash(), withoutVisual);
+}
+
+// 그리고 등록하지 않으면 실제로 해시가 달라진다는 것도 확인한다.
+// 이게 없으면 위 테스트가 "해시 함수가 원래 컴포넌트를 안 본다"로도 통과해버린다.
+TEST_CASE(Render, UnregisteredComponentsStillAffectDeterminismHash) {
+    EF::World world;   // RegisterPresentationComponent를 부르지 않는다
+
+    const EF::EntityId entity = world.CreateEntity();
+    world.AddComponent<EF::Transform>(entity, EF::Transform{});
+
+    const uint64_t before = world.ComputeHash();
+    world.AddComponent<EF::Renderable>(entity, EF::Renderable{});
+
+    EXPECT_TRUE(world.ComputeHash() != before);
 }

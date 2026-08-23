@@ -388,6 +388,11 @@ namespace EF {
         return m_impl->height;
     }
 
+    bool Win32Window::HasFocus() const {
+        // 창이 없으면 포커스도 없다. Create 전이나 Destroy 후에 물어도 안전하다.
+        return m_impl->hwnd != nullptr && GetForegroundWindow() == m_impl->hwnd;
+    }
+
     bool Win32Window::ConsumeResized() {
         const bool wasResized = m_impl->resized;
         m_impl->resized = false;
