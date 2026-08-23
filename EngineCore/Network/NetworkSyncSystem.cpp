@@ -23,59 +23,7 @@ namespace EF {
         // 6을 고른 근거: ApplyConfirmedInputs의 이동 스텝이 tick당 1유닛이므로, 6유닛은
         // "6 tick(50Hz에서 약 0.12초) 동안 한 방향으로 밀어야 옆 사람 자리에 닿는" 거리다.
         // 스폰 직후 서로 겹쳐 보이지 않을 만큼은 떨어져 있고, 화면 밖으로 나갈 만큼
-        // 멀지도 않다. 렌더 카메라가 정해지면 다시 조정할 값이다.
-        constexpr int32_t kPlayerSpawnSpacingUnits = 6;
 
-        /**
-         * 접속한 클라이언트가 조종할 플레이어 엔티티를 서버 월드에 만든다.
-         *
-         * 붙이는 컴포넌트는 둘이다.
-         *  - `PlayerControl{clientId}` — `ApplyConfirmedInputs`가 확정 입력을 이 엔티티에
-         *    매칭하는 키. 이게 없으면 접속한 클라이언트는 조종할 대상이 없다.
-         *  - `Transform` — 이동 결과가 실리는 곳이자, 렌더가 읽는 유일한 위치 정보.
-         *
-         * 스폰 위치는 **clientId에서만** 유도한다(= x축으로 kPlayerSpawnSpacingUnits씩).
-         * 난수도, 접속 시각도, float도 쓰지 않는다 — 스냅샷을 받은 클라이언트가 같은 값을
-         * 재현할 수 있어야 하고, 값 자체도 `Fixed64::FromInt`로만 만들어야 하기 때문이다.
-         * 전원이 원점에 겹쳐 나오면 화면에서 구별이 안 되므로 겹치지 않게 벌린다.
-         *
-         * ⚠️⚠️ **함정 — 이 스폰은 확정 입력 경로 밖에서 일어난다(roadmap.md §6, N2 미완료).**
-         *
-         * 여기는 `Hello` 패킷을 받은 "그 순간"이고, 그 시점은 서버만 안다. lockstep의 대전제는
-         * "서버와 모든 클라이언트가 같은 tick에 같은 일을 한다"인데 이 스폰은 그 밖에 있다.
-         * 구체적으로 무엇이 어긋나는가:
-         *
-         *  1. 새 클라이언트가 붙으면 서버 월드가 즉시 바뀌지만, 그 변화는 어떤 peer에게도
-         *     릴레이되지 않는다. 이미 접속해 있던 클라이언트는 다음 `TickHash`에서 불일치를
-         *     보고 `ResyncRequest` → 전체 스냅샷으로 뒤늦게 따라잡는다. 즉 **접속 한 번마다
-         *     기존 전원이 리싱크한다.** 지금은 "결국 수렴하니까" 넘어가고 있는 것이지,
-         *     설계대로 동작하는 게 아니다.
-         *  2. 더 나쁜 건 `EntityManager` 상태다. `CreateEntity()`는 다음 index와 free list를
-         *     소비한다. 서버만 이 호출을 하면 서버와 클라의 할당 상태가 갈라지고, 그 뒤로
-         *     **같은 확정 입력으로 스폰해도 서로 다른 EntityId가 나온다.** 스냅샷이
-         *     `EntityManager` 상태까지 나르도록 고쳐 둔 덕(N1)에 리싱크로 덮이지만,
-         *     리싱크 없이 굴러가는 구간에서는 언제든 디싱크가 된다.
-         *  3. 같은 이유로 `World::ComputeHash()`는 아직 `EntityManager` 상태를 해시에 넣지
-         *     못한다(World.hpp의 주석 참조). 디싱크 탐지를 일부러 무디게 해 둔 상태다.
-         *
-         * 제대로 된 자리는 "접속을 확정 입력 스트림에 실리는 결정론 이벤트로 만들고, 서버와
-         * 모든 클라가 같은 tick에 같은 스폰을 실행"하는 것이다 — roadmap.md §6의 N2.
-         * 그때까지 이 함수는 **알려진 구멍**이다. 여기에 스폰 로직을 더 얹지 말 것.
-         */
-        void SpawnPlayerEntity(World& world, uint32_t clientId, EntityId entity) {
-            // clientId는 1부터 발급된다(NetworkManager::AllocateClientId). 첫 클라가 원점에
-            // 서도록 1을 빼서 슬롯 번호로 바꾼다. int32_t 승격은 FromInt의 인자 타입에 맞추기
-            // 위한 것이고, 오버플로 걱정이 필요한 규모의 clientId는 이 게임에 나오지 않는다.
-            const int32_t spawnSlot = static_cast<int32_t>(clientId) - 1;
-
-            world.AddComponent<Transform>(entity, Transform{
-                .position = Vector3(Fixed64::FromInt(spawnSlot * kPlayerSpawnSpacingUnits),
-                                    Fixed64::Zero(),
-                                    Fixed64::Zero()),
-                .rotation = Quaternion::Identity()
-            });
-            world.AddComponent<PlayerControl>(entity, PlayerControl{ .clientId = clientId });
-        }
     }
 
     NetworkSyncSystem::NetworkSyncSystem(NetworkSyncMode mode)
@@ -160,7 +108,21 @@ namespace EF {
 
         DropTimedOutClients(world, network, tick);
 
-        // 등록된 모든 클라이언트에게 현재 월드 hash를 보낸다.
+        // 이 tick에 확정된 것: 세션 이벤트 먼저, 그다음 입력.
+        //
+        // ⚠️ 순서가 계약이다. 같은 tick에 접속과 입력이 함께 있으면 엔티티가 먼저 있어야
+        //    입력이 갈 곳이 생긴다. 클라이언트도 같은 순서로 적용한다(ApplyBufferedInputFrames).
+        const std::vector<SessionEvent> events = network.ConfirmSessionEvents(tick);
+        ApplySessionEvents(world, events);
+
+        // Join으로 만들어진 엔티티를 서버 장부에 연결한다.
+        // 이건 월드 상태가 아니라 서버만 쓰는 조회용이라 여기서 해도 결정론에 영향이 없다.
+        for (const SessionEvent& event : events) {
+            if (event.kind == SessionEvent::Kind::Join) {
+                network.BindControlledEntity(event.clientId, FindPlayerEntityFor(world, event.clientId));
+            }
+        }
+
         const std::vector<InputCommand> confirmed = network.ConfirmInputs(tick);
         ApplyConfirmedInputs(world, confirmed);
 
@@ -170,6 +132,7 @@ namespace EF {
             if (state.endpoint.IsValid()) {
                 network.SendInputFrame(InputFrame{
                     .tick = tick,
+                    .events = events,
                     .inputs = confirmed
                 }, state.endpoint);
                 network.SendTickHash(TickHash{
@@ -195,6 +158,10 @@ namespace EF {
     //    스냅샷 한 번씩을 받는다.** 옳은 방향은 해제를 확정 입력 경로의 이벤트로 만드는 것이고,
     //    설계 문서 §8의 Dormant(파괴 대신 얼리기)와 함께 처리해야 한다.
     void NetworkSyncSystem::DropTimedOutClients(World& world, NetworkManager& network, uint64_t tick) {
+        // 엔티티 파괴는 확정 이벤트가 하므로 여기서 월드를 직접 만지지 않는다.
+        // 인자는 시그니처 일관성(다른 Update* 계열과 같은 모양)을 위해 남긴다.
+        static_cast<void>(world);
+
         // 5초(50Hz 기준 250 tick). 짧으면 잠깐 끊긴 클라를 쫓아내고, 길면 유령이 오래 남는다.
         // 신뢰성 계층의 재전송이 이 안에서 몇 번이고 시도할 수 있는 길이로 잡았다.
         constexpr uint64_t kClientTimeoutTicks = 250;
@@ -214,12 +181,25 @@ namespace EF {
         std::sort(timedOut.begin(), timedOut.end());
 
         for (uint32_t clientId : timedOut) {
-            const EntityId controlled = network.UnregisterClient(clientId);
-            if (controlled != kNullEntity && world.IsAlive(controlled)) {
-                world.DestroyEntity(controlled);
-            }
-            LOG_INFO("클라이언트 {} 타임아웃({}틱 무응답). 등록과 플레이어 엔티티를 정리했다.",
-                     clientId, kClientTimeoutTicks);
+            // ⚠️ 여기서 엔티티를 직접 파괴하지 않는다. 스폰과 같은 이유다 —
+            //    확정 경로 밖에서 월드를 바꾸면 EntityManager가 갈라진다.
+            //    다음 tick에 확정될 Leave 이벤트를 예약하면 서버와 모든 클라가
+            //    각자 같은 tick에 같은 엔티티를 파괴한다.
+            //
+            //    ⚠️ 예약을 **먼저** 하고 등록을 해제한다. 순서를 뒤집으면 이 클라가
+            //       Clients()에서 사라진 뒤에 이벤트가 확정되는데, 그 자체는 문제없지만
+            //       예약 실패 시 유령이 남는다. 예약이 확실히 큐에 들어간 뒤에 지운다.
+            network.QueueSessionEvent(tick + 1, SessionEvent{
+                .kind = SessionEvent::Kind::Leave,
+                .clientId = clientId
+            });
+
+            // 장부와 신뢰성 채널은 지금 정리한다. 이건 월드 상태가 아니고,
+            // 채널을 남겨두면 ack 없는 reliable 레코드가 계속 쌓인다.
+            network.UnregisterClient(clientId);
+
+            LOG_INFO("클라이언트 {} 타임아웃({}틱 무응답). 등록을 정리하고 "
+                     "다음 tick에 Leave를 확정한다.", clientId, kClientTimeoutTicks);
         }
     }
 
@@ -289,7 +269,9 @@ namespace EF {
                 // 1회성이라 여기서 스스로 꺼진다.
                 m_debugSkipNextConfirmedFrame = false;
             } else {
-                ApplyConfirmedInputs(world, frameIt->second);
+                // 서버와 **같은 순서**로 적용한다: 세션 이벤트 → 입력.
+                ApplySessionEvents(world, frameIt->second.events);
+                ApplyConfirmedInputs(world, frameIt->second.inputs);
             }
             m_clientSimTick = nextTick;
             m_frameBuffer.erase(frameIt);
@@ -422,7 +404,7 @@ namespace EF {
         case Network::PacketType::InputFrame: {
             InputFrame frame;
             if (NetworkManager::DecodeInputFrame(packet.payload, frame) && m_hasSnapshot && frame.tick > m_clientSimTick) {
-                m_frameBuffer.try_emplace(frame.tick, std::move(frame.inputs));
+                m_frameBuffer.try_emplace(frame.tick, std::move(frame));
             }
             break;
         }
@@ -464,14 +446,21 @@ namespace EF {
                 uint32_t clientId = network.ClientIdForEndpoint(from);
                 if (clientId == 0) {
                     clientId = network.AllocateClientId();
-                    const EntityId controlledEntity = world.CreateEntity();
 
-                    // ⚠️ 확정 입력 경로 밖에서 월드를 바꾸는 자리다. 위험의 전모는
-                    //    SpawnPlayerEntity의 헤더 주석과 docs/design/roadmap.md §6(N2)에 있다.
-                    SpawnPlayerEntity(world, clientId, controlledEntity);
-
-                    NetworkClientState& client = network.RegisterClient(clientId, controlledEntity, from);
-                    client.hasTypeTable = true;
+                    // ⚠️ 여기서 엔티티를 만들지 않는다. 이게 N2의 요점이다.
+                    //
+                    // clientId 발급과 endpoint 등록은 **서버의 장부**일 뿐 월드 상태가 아니라
+                    // 여기서 해도 된다. 하지만 플레이어 엔티티를 만드는 것은 월드를 바꾸는
+                    // 일이고, 그걸 확정 입력 밖에서 하면 그 순간 서버의 EntityManager가
+                    // 클라들과 갈라진다 — 이후 CreateEntity가 서로 다른 index를 뽑는다.
+                    //
+                    // 대신 다음 tick에 확정될 Join 이벤트를 예약한다. 그러면 서버와 모든
+                    // 클라이언트가 **각자** 같은 tick에 같은 엔티티를 만든다.
+                    network.RegisterClient(clientId, kNullEntity, from);
+                    network.QueueSessionEvent(tick + 1, SessionEvent{
+                        .kind = SessionEvent::Kind::Join,
+                        .clientId = clientId
+                    });
                 }
                 network.SendWelcome(clientId, from);
                 network.SendTypeTable(world.BuildTypeTable(), from);

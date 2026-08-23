@@ -111,6 +111,27 @@ namespace EF {
         /// 월드에서 엔티티를 지우는 것은 **호출자의 몫**이다. NetworkManager는 월드를 모른다.
         EntityId UnregisterClient(uint32_t clientId);
 
+        /// @brief 세션 이벤트를 특정 tick에 확정되도록 예약한다(서버 전용).
+        ///
+        /// 접속·해제는 **입력이 아니다.** 도착 시각이 peer마다 다르고 클라이언트는
+        /// 다른 클라의 접속을 스스로 알 수 없다. 그래서 서버가 그 비결정론적 사건을
+        /// tick 하나에 못 박고, 그 뒤로는 확정 입력과 똑같이 흐르게 한다.
+        void QueueSessionEvent(uint64_t tick, const SessionEvent& event);
+
+        /// @brief 확정된 Join으로 만들어진 엔티티를 이 clientId의 장부에 연결한다(서버 전용).
+        ///
+        /// 월드 상태가 아니라 서버만 쓰는 조회용이라 확정 경로 밖에서 갱신해도 결정론에
+        /// 영향이 없다. 엔티티 자체는 ApplySessionEvents가 모든 peer에서 똑같이 만든다.
+        void BindControlledEntity(uint32_t clientId, EntityId entity);
+
+        /// @brief 그 tick에 확정된 세션 이벤트를 꺼낸다. **clientId 순으로 정렬되어 나온다.**
+        ///
+        /// ⚠️ 정렬이 여기 있는 이유: 이 순서가 곧 엔티티 생성 순서이고, 그게 EntityId를
+        ///    결정한다. 순서가 peer마다 다르면 같은 사건에서 다른 id가 나와 즉시 갈라진다.
+        ///    적용하는 쪽(ApplySessionEvents)에서 다시 정렬하지 않는다 — 두 곳에서 정렬하면
+        ///    한쪽만 바뀌었을 때 조용히 어긋난다.
+        [[nodiscard]] std::vector<SessionEvent> ConfirmSessionEvents(uint64_t tick);
+
         /// @brief 이 endpoint의 클라이언트가 살아 있다고 표시한다. 등록되지 않은 endpoint면 무시.
         ///
         /// 패킷 종류를 가리지 않고 부른다. 가만히 서 있는 클라이언트는 InputCommand를
@@ -195,6 +216,9 @@ namespace EF {
         uint64_t m_currentTick = 0;
         std::unordered_map<uint32_t, NetworkClientState> m_clients;
         std::unordered_map<Network::Endpoint, uint32_t> m_endpointToClient;
+
+        // tick → 그 tick에 확정될 세션 이벤트들. 서버에서만 채워진다.
+        std::map<uint64_t, std::vector<SessionEvent>> m_pendingSessionEvents;
 
         // endpoint별 신뢰성 상태 머신.
         std::unordered_map<Network::Endpoint, Network::ReliabilityChannel> m_channels;

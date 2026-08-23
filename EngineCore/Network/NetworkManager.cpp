@@ -120,6 +120,40 @@ namespace EF {
         }
     }
 
+    void NetworkManager::QueueSessionEvent(uint64_t tick, const SessionEvent& event) {
+        m_pendingSessionEvents[tick].push_back(event);
+    }
+
+    void NetworkManager::BindControlledEntity(uint32_t clientId, EntityId entity) {
+        auto it = m_clients.find(clientId);
+        if (it == m_clients.end()) {
+            return;
+        }
+        it->second.controlledEntity = entity;
+        it->second.hasControlledEntity = (entity != kNullEntity);
+    }
+
+    std::vector<SessionEvent> NetworkManager::ConfirmSessionEvents(uint64_t tick) {
+        auto it = m_pendingSessionEvents.find(tick);
+        if (it == m_pendingSessionEvents.end()) {
+            return {};
+        }
+
+        std::vector<SessionEvent> events = std::move(it->second);
+        m_pendingSessionEvents.erase(it);
+
+        // clientId 순으로 정렬한다. 이 순서가 곧 엔티티 생성 순서이고 그게 EntityId를 정한다.
+        // 같은 clientId에 Join과 Leave가 같은 tick에 겹치는 일은 없어야 하지만,
+        // 있더라도 순서가 확정되도록 kind를 두 번째 키로 쓴다.
+        std::sort(events.begin(), events.end(), [](const SessionEvent& a, const SessionEvent& b) {
+            if (a.clientId != b.clientId) {
+                return a.clientId < b.clientId;
+            }
+            return static_cast<uint8_t>(a.kind) < static_cast<uint8_t>(b.kind);
+        });
+        return events;
+    }
+
     EntityId NetworkManager::UnregisterClient(uint32_t clientId) {
         auto it = m_clients.find(clientId);
         if (it == m_clients.end()) {
@@ -569,6 +603,15 @@ namespace EF {
     std::vector<uint8_t> NetworkManager::EncodeInputFrame(const InputFrame& frame) {
         Writer writer;
         writer.U64(frame.tick);
+
+        // ⚠️ 세션 이벤트가 입력보다 **먼저** 나간다. 읽는 쪽도 같은 순서여야 한다.
+        //    적용 순서(events → inputs)와 맞춰 둔 것이라, 한쪽만 바꾸면 조용히 어긋난다.
+        writer.U32(static_cast<uint32_t>(frame.events.size()));
+        for (const SessionEvent& event : frame.events) {
+            writer.U8(static_cast<uint8_t>(event.kind));
+            writer.U32(event.clientId);
+        }
+
         writer.U32(static_cast<uint32_t>(frame.inputs.size()));
         for (const InputCommand& command : frame.inputs) {
             WriteInputCommand(writer, command);
@@ -578,8 +621,32 @@ namespace EF {
 
     bool NetworkManager::DecodeInputFrame(const std::vector<uint8_t>& payload, InputFrame& outFrame) {
         Reader reader(payload);
+        uint32_t eventCount = 0;
+        if (!reader.U64(outFrame.tick) || !reader.U32(eventCount)) {
+            return false;
+        }
+
+        // 세션 이벤트가 먼저다(EncodeInputFrame과 같은 순서).
+        outFrame.events.clear();
+        outFrame.events.reserve(SafeReserveCount(eventCount, reader));
+        for (uint32_t i = 0; i < eventCount; ++i) {
+            uint8_t kind = 0;
+            SessionEvent event;
+            if (!reader.U8(kind) || !reader.U32(event.clientId)) {
+                return false;
+            }
+
+            // 모르는 kind는 프레임 전체를 거부한다. 조용히 무시하면 이 peer만
+            // 그 사건을 놓친 채 계속 돌아가고, 그게 곧 디싱크다.
+            if (kind > static_cast<uint8_t>(SessionEvent::Kind::Leave)) {
+                return false;
+            }
+            event.kind = static_cast<SessionEvent::Kind>(kind);
+            outFrame.events.push_back(event);
+        }
+
         uint32_t count = 0;
-        if (!reader.U64(outFrame.tick) || !reader.U32(count)) {
+        if (!reader.U32(count)) {
             return false;
         }
 

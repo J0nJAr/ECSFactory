@@ -180,7 +180,9 @@ namespace EF {
         TickHash m_lastRemoteTickHash{};
         std::deque<InputCommand> m_localInputs;
         std::deque<RedundantInput> m_redundantInputs;
-        std::map<uint64_t, std::vector<InputCommand>> m_frameBuffer;
+        // tick → 그 tick의 확정 프레임(세션 이벤트 + 입력).
+        // 입력만 담으면 접속·해제가 사라진다 — 그건 확정 경로를 타야 하는 사건이다.
+        std::map<uint64_t, InputFrame> m_frameBuffer;
         std::map<uint64_t, uint64_t> m_pendingTickHashes;
 
         // tick별 로컬 월드 해시. TickHash 비교의 기준이 된다.

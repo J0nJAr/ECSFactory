@@ -495,7 +495,7 @@ TEST_CASE(Network, ServerClientConnectionTransfersInputAndSnapshot) {
     EXPECT_EQ(confirmed[0].clientId, command.clientId);
     EXPECT_EQ(confirmed[0].buttonMask, command.buttonMask);
 
-    EXPECT_TRUE(serverNetwork.SendInputFrame(EF::InputFrame{ .tick = command.tick, .inputs = confirmed }));
+    EXPECT_TRUE(serverNetwork.SendInputFrame(EF::InputFrame{ .tick = command.tick, .events = {}, .inputs = confirmed }));
     auto framePacket = clientNetwork.TryReceivePacket();
     EXPECT_TRUE(framePacket.has_value());
     EXPECT_EQ(static_cast<int>(framePacket->type), static_cast<int>(EF::Network::PacketType::InputFrame));
@@ -2115,4 +2115,192 @@ TEST_CASE(Network, VanishedClientIsCleanedUpAfterTimeout) {
 
     EXPECT_TRUE(serverWorld.GetResource<EF::NetworkManager>().FindClient(clientId) == nullptr);
     EXPECT_FALSE(ProbePlayer(serverWorld, clientId).found);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// N2 — 스폰·디스폰이 확정 입력 경로에서만 일어난다
+//
+// lockstep에서 스폰은 원래 복제 대상이 아니다. 모두가 같은 확정 입력을 같은 tick에
+// 적용하면 각자 알아서 똑같은 엔티티를 만든다. 문제는 "누가 접속했다"가 **입력이
+// 아니라는** 것이었다 — 도착 시각이 peer마다 다르고, 클라는 남의 접속을 스스로 모른다.
+//
+// 예전에는 서버가 Hello를 받는 자리에서 곧장 CreateEntity를 불렀다. 그 순간 서버의
+// EntityManager가 클라들과 갈라지고, 이후 같은 확정 입력으로 스폰해도 서로 다른
+// EntityId가 나온다. 수습은 resync가 했다 — 즉 **접속 한 번에 남은 전원이 스냅샷을
+// 한 번씩 받았다.** 지금은 서버가 그 사건을 tick 하나에 못 박아 확정 프레임에 실어 보낸다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 두 번째 클라가 **실제로 접속해도** 첫 번째 클라가 resync를 받지 않는다.
+//
+// 이게 N2의 핵심 성과다. 예전에는 서버가 Hello 자리에서 곧장 CreateEntity를 불렀고,
+// 그 순간 서버의 EntityManager가 기존 클라들과 갈라져서 스냅샷으로 덮어야 했다.
+// 즉 **접속 한 번에 남은 전원이 스냅샷을 한 번씩 받았다.**
+//
+// ⚠️ 반드시 진짜 Hello 경로를 타야 한다. 서버에 QueueSessionEvent를 직접 부르면
+//    검증하려는 코드(Hello 처리)를 건너뛰어서 테스트가 공허해진다 — 실제로 처음에
+//    그렇게 썼다가, 옛 동작으로 되돌려도 통과하는 것을 보고 다시 썼다.
+TEST_CASE(Network, SecondClientJoinDoesNotResyncTheFirst) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(20260824);   // 무손실. 재전송이 결과를 흐리지 않게.
+    const Endpoint serverEp = Endpoint::Memory(910);
+    const Endpoint clientOneEp = Endpoint::Memory(911);
+    const Endpoint clientTwoEp = Endpoint::Memory(912);
+
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientOneHost = net.CreateHost(clientOneEp, serverEp);
+    auto clientTwoHost = net.CreateHost(clientTwoEp, serverEp);
+
+    EF::World serverWorld = CreateLockstepServerWorld();
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientOneWorld;
+    EF::NetworkSyncSystem& clientOneSync = AttachClientWorld(clientOneWorld, clientOneHost);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint64_t tick = 1;
+
+    // 1) 첫 클라만 붙여서 안정시킨다.
+    for (; tick <= 40; ++tick) {
+        clientOneWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+    EXPECT_TRUE(clientOneSync.HasSnapshot());
+    const uint32_t firstId = clientOneWorld.GetResource<EF::NetworkManager>().LocalClientId();
+    EXPECT_TRUE(firstId != 0);
+
+    const uint64_t snapshotsBefore = clientOneSync.AppliedSnapshotCount();
+
+    // 2) 두 번째 클라가 붙는다. 첫 클라는 계속 움직인다.
+    EF::World clientTwoWorld;
+    EF::NetworkSyncSystem& clientTwoSync = AttachClientWorld(clientTwoWorld, clientTwoHost);
+
+    for (; tick <= 140; ++tick) {
+        clientOneSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
+        clientOneWorld.FixedUpdate(dt, tick);
+        clientTwoWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+
+        // 접속이 진행되는 내내 첫 클라는 한 번도 흔들리면 안 된다.
+        EXPECT_FALSE(clientOneSync.HasHashMismatch());
+    }
+
+    EXPECT_TRUE(clientTwoSync.HasSnapshot());
+    const uint32_t secondId = clientTwoWorld.GetResource<EF::NetworkManager>().LocalClientId();
+    EXPECT_TRUE(secondId != 0 && secondId != firstId);
+
+    // 3) 첫 클라에게 스냅샷이 한 장도 추가로 오지 않았어야 한다. **이게 이 테스트의 요점이다.**
+    EXPECT_EQ(clientOneSync.AppliedSnapshotCount(), snapshotsBefore);
+
+    // 4) 그런데도 첫 클라의 월드에는 두 번째 플레이어가 있다 — 자기가 만든 것이다.
+    EXPECT_TRUE(ProbePlayer(clientOneWorld, secondId).found);
+    EXPECT_TRUE(ProbePlayer(serverWorld, secondId).found);
+}
+
+// 서버와 클라가 **각자 만든** 엔티티의 EntityId 까지 같다.
+//
+// 이게 성립해야 "복제하지 않고 각자 만든다"가 참이 된다. index만 같고 version이 다르면
+// IsAlive 판정이 갈라지고, EntityId 로 참조하는 코드가 생기는 순간 무너진다.
+//
+// ⚠️ 이 테스트는 **옛 동작(확정 경로 밖 즉시 스폰)에서도 통과한다** — 확인해 봤다.
+//    스냅샷이 EntityManager 상태를 나르므로(N1) resync가 결국 id까지 맞춰 주기 때문이다.
+//    그러니 이건 N2 회귀 탐지기가 아니라 **다른 종류의 파손을 막는 가드**다:
+//    스폰 위치를 clientId가 아닌 것에서 유도하거나, 적용 순서를 뒤집거나,
+//    EntityManager 복원이 깨지면 여기서 걸린다.
+//    N2 자체를 지키는 것은 위의 SecondClientJoinDoesNotResyncTheFirst 다.
+TEST_CASE(Network, IndependentlySpawnedEntitiesGetIdenticalEntityIds) {
+    using EF::Network::Endpoint;
+
+    EF::Network::SimulatedNetwork net(20260825);
+    const Endpoint serverEp = Endpoint::Memory(920);
+    const Endpoint clientOneEp = Endpoint::Memory(921);
+    const Endpoint clientTwoEp = Endpoint::Memory(922);
+
+    auto serverHost = net.CreateHost(serverEp);
+    auto clientOneHost = net.CreateHost(clientOneEp, serverEp);
+    auto clientTwoHost = net.CreateHost(clientTwoEp, serverEp);
+
+    EF::World serverWorld = CreateLockstepServerWorld();
+    serverWorld.AddResource<EF::NetworkManager>(serverHost);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientOneWorld;
+    EF::NetworkSyncSystem& clientOneSync = AttachClientWorld(clientOneWorld, clientOneHost);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint64_t tick = 1;
+    for (; tick <= 40; ++tick) {
+        clientOneWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    EF::World clientTwoWorld;
+    AttachClientWorld(clientTwoWorld, clientTwoHost);
+    for (; tick <= 140; ++tick) {
+        clientOneWorld.FixedUpdate(dt, tick);
+        clientTwoWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    const uint32_t secondId = clientTwoWorld.GetResource<EF::NetworkManager>().LocalClientId();
+    const EF::EntityId serverEntity = EF::FindPlayerEntityFor(serverWorld, secondId);
+    const EF::EntityId firstClientEntity = EF::FindPlayerEntityFor(clientOneWorld, secondId);
+
+    EXPECT_TRUE(serverEntity != EF::kNullEntity);
+    EXPECT_EQ(firstClientEntity, serverEntity);   // index와 version 둘 다
+    static_cast<void>(clientOneSync);
+}
+
+// 확정된 Leave 는 양쪽에서 같은 엔티티를 지운다.
+TEST_CASE(Network, ConfirmedLeaveRemovesPlayerOnBothSides) {
+    EF::World serverWorld;
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = WireLockstepPair(serverWorld, clientWorld);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t firstId = 0;
+    uint64_t tick = DriveToMovingLockstep(clientWorld, serverWorld, clientSync, dt, firstId);
+
+    EF::NetworkManager& serverNet = serverWorld.GetResource<EF::NetworkManager>();
+    const uint32_t secondId = serverNet.AllocateClientId();
+    serverNet.QueueSessionEvent(tick + 1, EF::SessionEvent{
+        .kind = EF::SessionEvent::Kind::Join, .clientId = secondId });
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 20);
+    EXPECT_TRUE(ProbePlayer(clientWorld, secondId).found);
+
+    const uint64_t snapshotsBefore = clientSync.AppliedSnapshotCount();
+    serverNet.QueueSessionEvent(tick + 1, EF::SessionEvent{
+        .kind = EF::SessionEvent::Kind::Leave, .clientId = secondId });
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 20);
+
+    EXPECT_FALSE(ProbePlayer(serverWorld, secondId).found);
+    EXPECT_FALSE(ProbePlayer(clientWorld, secondId).found);
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+    EXPECT_EQ(clientSync.AppliedSnapshotCount(), snapshotsBefore);   // 여기도 resync 없이
+}
+
+// 같은 Join 이벤트가 두 번 적용되어도 엔티티가 둘이 되지 않는다.
+//
+// 실제로 이런 경로가 있다: 스냅샷에 이미 담겨 온 뒤 같은 tick의 프레임을 또 받는 경우.
+// 엔티티가 둘이 되면 peer마다 다르게 나타나지 않아서 **해시로도 안 잡힌다** —
+// 조용히 틀린 채로 굴러가는 종류라 여기서 막는다.
+TEST_CASE(Network, DuplicateJoinEventDoesNotSpawnTwice) {
+    EF::World world;
+    world.RegisterSnapshotComponent<EF::Transform>();
+    world.RegisterSnapshotComponent<EF::PlayerControl>();
+
+    const EF::SessionEvent join{ .kind = EF::SessionEvent::Kind::Join, .clientId = 7 };
+    EF::ApplySessionEvents(world, std::span<const EF::SessionEvent>(&join, 1));
+    const uint64_t afterFirst = world.ComputeHash();
+
+    EF::ApplySessionEvents(world, std::span<const EF::SessionEvent>(&join, 1));
+    EXPECT_EQ(world.ComputeHash(), afterFirst);
+
+    int count = 0;
+    for (auto [entity, control] : world.CreateView<EF::PlayerControl>()) {
+        static_cast<void>(entity);
+        if (control.clientId == 7) { ++count; }
+    }
+    EXPECT_EQ(count, 1);
 }
