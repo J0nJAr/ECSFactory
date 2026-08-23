@@ -109,7 +109,8 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineCore -Kind pair -Rel
 - **[docs/reference/milestone-codes.md](docs/reference/milestone-codes.md) — 마일스톤 기호 사전.** `R2`·`N1`·`U8` 같은 기호가 무엇을 가리키고 지금 어떤 상태인지의 대조표. **이 기호는 저장소 안에서만 쓴다** — 블로그 글(`docs/blog/`)에는 뜻이 드러나는 말로 풀어 쓴다. 독자는 이 저장소를 볼 수 없다.
 - `docs/design/*.md` — 다음 에이전트·개발자를 대상으로 한 **핸드오프 스펙**: 근거, 불변식, 마일스톤 상태, 함정. 입력·동기화를 건드리기 전에 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)를, 렌더링을 건드리기 전에 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)를, UI를 건드리기 전에 [docs/design/ui-layer.md](docs/design/ui-layer.md)를 읽는다. 뒤의 둘은 **설계 대비 구현이 앞부분만 들어와 있다** — 렌더링은 R0~R3(창·device·쿼드), UI는 U3(앵커 레이아웃)까지다. 나머지는 아직 문서뿐이므로, 각 문서의 마일스톤 표에서 지금 어디까지 왔는지를 먼저 확인할 것.
 - `docs/blog/*.md` — 각 계층을 만든 순서대로 쓴 서술형 기록(05 패킷 → 06 동기화 상태머신 → 07 신뢰성 UDP → 08 lockstep → 09 결정론 스폰 → 10 렌더 타깃 분리·창 → 11 DX11 첫 픽셀).
-  - ⚠️ **`docs/blog/`에 있다고 발행된 것은 아니다.** 티스토리 발행은 붙여넣기 수동 작업이라 저장소가 앞서간다. 현재 발행분은 7편(`machamy.tistory.com/34`)까지고 **8~11편이 미발행**이다.
+  - ⚠️ **`docs/blog/`에 있다고 발행된 것은 아니다.** 티스토리 발행은 붙여넣기 수동 작업이라 저장소가 앞서간다. 2026-08-23 기준 발행분은 **9편까지**(`machamy.tistory.com/36`)이고 그 뒤에 복습편 두 개(`/37` 1~4편, `/38` 5~9편)가 있다. **10·11편은 미발행.**
+  - 이 숫자는 저장소가 알 수 없으므로 금방 낡는다. 확실하지 않으면 **소유자에게 묻거나 블로그를 직접 확인**할 것. 카테고리 페이지는 목록이 잘려 보일 수 있으니 최신 글 목록(블로그 첫 페이지)을 본다.
   - 블로그 글을 쓰거나 고칠 때는 [docs/reference/writing-style.md](docs/reference/writing-style.md)의 문체 기준을 따르고 `python tools/check-writing-style.py --all-blog`로 검사한다. 설계 문서와 코드 주석은 이 기준의 대상이 아니다.
 
 `README.md`의 "작업 스케치" 섹션이 살아 있는 TODO 목록이다.
