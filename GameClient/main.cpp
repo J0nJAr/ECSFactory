@@ -337,6 +337,7 @@ protected:
 
             Input::Update();
             CollectLocalInput(engine, window);
+            FollowLocalPlayer();
 
             const auto now = std::chrono::steady_clock::now();
             const auto deltaUs = std::chrono::duration_cast<std::chrono::microseconds>(now - previous).count();
@@ -372,6 +373,43 @@ protected:
     }
 
 private:
+    // 카메라를 내 플레이어에 붙인다.
+    //
+    // 왜 필요한가: 이동이 tick당 1유닛이고 tick이 50Hz라 **초당 50유닛**이다.
+    // 기본 시야가 세로 60유닛이므로 카메라가 고정이면 0.6초 만에 화면 밖으로 나간다.
+    // 실제로 W를 1.5초 누르고 캡처했더니 아무도 안 보였다 — 사라진 게 아니라 75유닛
+    // 위로 날아간 것이었다.
+    //
+    // ⚠️ 이건 순수하게 표현이다. 카메라 위치는 시뮬레이션에 영향을 주지 않고 해시에도
+    //    안 들어간다. 그래서 클라마다 카메라가 달라도(각자 자기를 따라가도) 결정론은
+    //    그대로다 — 오히려 그게 정상이다.
+    //
+    // 지금은 즉시 따라붙는다(스무딩 없음). 50Hz 시뮬을 그대로 그리는 단계라 부드럽게
+    // 만들 여지가 어차피 없고, 보간(R7)이 들어오면 그때 카메라도 같이 다듬는 게 맞다.
+    void FollowLocalPlayer() {
+        if (m_clientWorld == nullptr) {
+            return;
+        }
+
+        const uint32_t localId = m_clientWorld->GetResource<NetworkManager>().LocalClientId();
+        if (localId == 0) {
+            return;   // 아직 Welcome을 못 받았다
+        }
+
+        for (auto [entity, transform, control] : m_clientWorld->CreateView<Transform, PlayerControl>()) {
+            static_cast<void>(entity);
+            if (control.clientId != localId) {
+                continue;
+            }
+            // 화면 평면은 월드 XZ다. Camera::position.y가 월드 Z인 것에 주의.
+            m_camera.position = Float2{
+                transform.position.x.ToFloat(),
+                transform.position.z.ToFloat()
+            };
+            return;
+        }
+    }
+
     // 실제 키보드를 lockstep 경로에 넣는다. tick당 최대 하나.
     //
     // ⚠️ **프레임이 아니라 tick 단위로 넣는다.** 이 루프는 모니터 주사율(보통 60~144Hz)로
