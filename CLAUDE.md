@@ -251,8 +251,12 @@ tick당 흐름:
 - 클라이언트 예측·롤백 없음 — 클라는 입력 지연 + RTT만큼 뒤처진다.
 - **결정론 스폰/디스폰** 🟡 절반 완료 — 스냅샷이 `EntityManager` 상태(version / free list / next index)를 나르지 않던 문제는 해결됐다(N1). 남은 것은 **스폰·디스폰이 확정 입력 경로에서만 일어나게 하는 것**(N2)이다. 지금은 `NetworkSyncSystem`의 `Hello` 처리가 확정 입력 밖에서 `CreateEntity()`를 부른다. 건설·스폰이 필요한 작업 전에 정리할 것 — [roadmap.md §6](docs/design/roadmap.md).
 - ⚠️ **`World::ComputeHash()`가 풀을 프로세스 로컬 타입 인덱스 순서로 순회한다.** 타입을 처음 쓰는 순서가 다른 두 프로세스는 월드 내용이 같아도 다른 해시를 낸다(위의 index vs hash 규칙을 해시 함수 자신이 밟고 있다). 지금은 클라·서버가 같은 순서로 등록해서 드러나지 않을 뿐이다.
+- ⚠️ **디싱크 복구(resync)가 스냅샷 tick 라벨을 한 칸 앞서 붙인다.** 서버가 `ResyncRequest`에 답하는 `CreateSnapshot(tick)`은 `ConfirmInputs(tick)` **적용 전** 상태인데 라벨은 `tick`으로 나간다. 클라는 그걸 받고 `InputFrame(tick)`을 버리므로 **resync마다 확정 입력 한 프레임을 잃고**, 월드가 매 tick 바뀌는 동안에는 복구가 끝나지 않는다(tick마다 전체 스냅샷을 받는 무한 루프. 200 tick 실측 확인). 조인 핸드셰이크도 같은 경로를 밟는데 접속 순간엔 아무도 안 움직여서 안 드러날 뿐이다. 상세와 재현은 [deterministic-input-lockstep.md §7](docs/design/deterministic-input-lockstep.md), 탐지·복구 경로 테스트는 `Network.*ResyncSnapshot` 계열.
 - ⚠️ **`EntityManager::IsAlive`가 free list를 보지 않는다.** version만 비교하므로 "파괴됐지만 아직 재사용되지 않은 index"로 만든 id를 살아 있다고 판정한다. `View`가 dense 풀에서만 id를 뽑아 현재는 안 물리지만, 임의 index로 id를 만드는 코드를 추가하면 물린다.
-- **렌더링은 R3까지만.** 카메라(R4)가 없어서 `SetCamera`에 항등 행렬이 들어가고, 그리는 좌표가 월드 좌표가 아니라 NDC(-1..1)다. `RenderSystem`(R5)이 없어서 그릴 것을 [GameClient/main.cpp](GameClient/main.cpp)의 `BuildFrame`이 하드코딩한다 — ECS와 화면이 아직 연결되지 않았다. 보간(R7)도 없어서 50Hz 시뮬을 그대로 그린다.
+- **렌더링은 R6까지.** 남은 것은 보간(R7)뿐이다 — 50Hz 시뮬을 그대로 그리므로 빠르게 움직이면 끊겨 보인다. 텍스처·깊이 버퍼·컬링도 아직 없다(컬러 쿼드만).
+- ⚠️ **resync가 "움직이는 월드"에서 수렴하지 못한다 — 알려진 결함.** `UpdateServer`가 `수신 → 입력 적용 → TickHash 방송` 순이라, `ResyncRequest`에 답하는 `CreateSnapshot(tick)`은 *그 tick의 입력을 적용하기 전* 상태인데 라벨은 `tick`으로 붙는다. 클라는 `clientSimTick = snapshot.tick`으로 놓고 같은 tick의 `InputFrame`을 "이미 지난 것"으로 버려서, **resync마다 확정 입력 한 프레임을 조용히 삼킨다.** 월드가 정지해 있으면 3 tick 만에 복구되지만(삼킨 프레임이 no-op이라), 계속 움직이는 중이면 200 tick·스냅샷 200개를 받고도 복구되지 않는다. 조인 핸드셰이크도 같은 경로를 밟는다(접속 순간엔 아무도 안 움직여서 안 드러날 뿐). 자세한 분석은 [deterministic-input-lockstep.md §7](docs/design/deterministic-input-lockstep.md).
+- ⚠️ **`ResyncRequest`에 rate limit이 없다.** 불일치하는 pending tick마다 요청하고 서버는 요청마다 전체 스냅샷을 reliable로 답한다. 위 결함과 겹치면 스냅샷 폭풍이 된다.
+- ⚠️ **접속 해제 경로가 없다.** 나간 클라이언트의 플레이어 엔티티가 영원히 남고, 재접속하면 endpoint가 달라져 새 `clientId` + 새 스폰이 되어 유령이 쌓인다.
 - **UI는 U3까지만.** 앵커 레이아웃 계산은 있지만 그걸 그릴 `UIDrawList`(U1)와 폰트(U2)가 없어서 화면에 UI가 나오지 않는다.
 - `SystemRegistry::SortSystems()`는 TODO. 시스템은 등록 순서대로 실행된다.
 

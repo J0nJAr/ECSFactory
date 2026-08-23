@@ -1677,3 +1677,282 @@ TEST_CASE(Network, ReliabilityChannelRecoversFromLossyConnectionByResending) {
     // 그리고 재전송으로 "결국" 이겼다는 것 — 상한에 걸려 끝난 게 아니다.
     EXPECT_TRUE(usedTicks < kMaxTicks - 1);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 디싱크 탐지·복구 경로 (TickHash 불일치 → ResyncRequest → WorldSnapshot)
+//
+// 이 경로는 정상 세션에서 **한 번도 실행되지 않는다.** 실행되지 않는 코드는 조용히
+// 썩고, 정작 필요한 날(실전 디싱크)에 처음 돌아간다. 그래서 디싱크를 일부러 만들어
+// 놓고 전 과정을 확인한다.
+//
+// 주입 수단은 NetworkSyncSystem::DebugSkipNextConfirmedInputFrameOnce()다 —
+// "확정 InputFrame 하나를 받았지만 적용하지 않는다". 고른 이유와 버린 대안은 그
+// 함수의 헤더 주석에 있다.
+//
+// 허위 불일치(거짓 양성) 쪽은 이미 다른 테스트가 덮고 있어 여기서 반복하지 않는다:
+//  - Network.BatchedInputFramesDoNotCauseFalseHashMismatch
+//      → 프레임이 몰아서 적용되어 clientSimTick이 점프해도 허위 불일치가 없다.
+//  - Network.LockstepConvergesTwoClientsOverLossyReorderingLink
+//      → 손실·중복·재정렬 링크에서 700 tick을 돌려도 불일치가 뜨지 않는다.
+// 아래의 NoInjectionKeepsCleanSession은 그 둘의 반복이 아니라 **이 파일의 시나리오
+// 자체가 멀쩡하다는 대조군**이다(= 위 테스트들의 불일치는 주입 때문이지 배선 때문이 아니다).
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+    // 서버·클라 월드를 lockstep 한 쌍으로 배선하고 클라 쪽 동기화 시스템을 돌려준다.
+    //
+    // 왜 SimulatedNetwork(손실 링크)가 아니라 무손실 MemoryConnection인가:
+    // 여기서 재려는 것은 "복구 경로가 도는가"와 "복구까지 몇 tick인가"다. 손실 링크를
+    // 깔면 그 숫자가 손실 패턴에 좌우되어 회귀를 재는 자가 되지 못한다. 손실 환경에서의
+    // 수렴은 Network.LockstepConvergesTwoClientsOverLossyReorderingLink가 이미 덮는다.
+    EF::NetworkSyncSystem& WireLockstepPair(EF::World& serverWorld, EF::World& clientWorld) {
+        auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+        // 플레이어 엔티티는 여기서 만들지 않는다 — 서버가 Hello를 받을 때 스폰한다
+        // (CreateLockstepServerWorld의 주석과 같은 이유).
+        serverWorld.RegisterSnapshotComponent<EF::Transform>();
+        serverWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+        serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+        serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+        return AttachClientWorld(clientWorld, clientConnection);
+    }
+
+    // tick 하나를 굴린다. 클라 → 서버 순서는 기존 lockstep 테스트와 같게 유지한다.
+    // 이 순서가 바뀌면 같은 시나리오라도 왕복 지연이 한 칸 달라져 측정값이 흔들린다.
+    void StepLockstepPair(EF::World& clientWorld, EF::World& serverWorld, EF::Fixed64 dt, uint64_t tick) {
+        clientWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+    }
+
+    // startTick부터 tickCount만큼 굴리고, 다음에 쓸 tick 번호를 돌려준다.
+    uint64_t AdvanceLockstepPair(EF::World& clientWorld, EF::World& serverWorld, EF::Fixed64 dt,
+                                 uint64_t startTick, uint64_t tickCount) {
+        for (uint64_t i = 0; i < tickCount; ++i) {
+            StepLockstepPair(clientWorld, serverWorld, dt, startTick + i);
+        }
+        return startTick + tickCount;
+    }
+
+    // Hello → Welcome/TypeTable → WorldSnapshot 핸드셰이크에 필요한 tick 수.
+    // 무손실 MemoryConnection에서 클라 → 서버 순으로 굴릴 때의 실측값이다.
+    constexpr uint64_t kHandshakeTicks = 3;
+
+    // 이동 입력을 넣고 확정 프레임이 실제로 월드를 바꾸는 상태가 될 때까지 기다리는 tick 수.
+    // 입력 지연 2 tick + 왕복 1 tick보다 넉넉하게 잡았다.
+    constexpr uint64_t kInputSettleTicks = 6;
+
+    // 디싱크 주입 전까지의 공통 각본: 핸드셰이크 → 이동 입력 hold.
+    //
+    // 이동 입력을 **한 번만** 넣는 것이 핵심이다. 서버는 결측 tick을 "직전 입력 hold"로
+    // 채우므로(NetworkManager::ConfirmInputs), 그 뒤 모든 확정 프레임이 매 tick 월드를
+    // 바꾼다. 이 상태가 아니면 프레임 하나를 건너뛰어도 아무 일도 일어나지 않는다
+    // (건너뛴 프레임이 no-op이면 디싱크가 생기지 않는다).
+    uint64_t DriveToMovingLockstep(EF::World& clientWorld, EF::World& serverWorld,
+                                   EF::NetworkSyncSystem& clientSync, EF::Fixed64 dt,
+                                   uint32_t& outClientId) {
+        uint64_t tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, 1, kHandshakeTicks);
+        outClientId = clientWorld.GetResource<EF::NetworkManager>().LocalClientId();
+
+        clientSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
+        return AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, kInputSettleTicks);
+    }
+
+    struct RecoveryReport {
+        uint64_t nextTick = 0;          // 이어서 쓸 tick 번호
+        uint64_t ticksUntilRecovered = 0; // 0이면 예산 안에 복구되지 않았다는 뜻
+        std::size_t appliedSnapshots = 0; // 복구되기까지 클라가 적용한 WorldSnapshot 개수
+    };
+
+    // 이동을 멈춘 뒤 서버와 다시 일치할 때까지 굴린다.
+    //
+    // ⚠️ **왜 굳이 이동을 멈추고 재는가.** 지금 구현은 월드가 매 tick 계속 바뀌는 동안에는
+    //    복구가 끝나지 않는다 — 서버가 ResyncRequest에 답하는 스냅샷이 항상 한 tick 낡아서
+    //    resync가 무한히 반복된다. 상세는 docs/design/deterministic-input-lockstep.md §7의
+    //    "스냅샷 tick 라벨 off-by-one" 항목에 적어 두었다. 여기서는 그 결함을 우회해
+    //    "복구 경로 자체는 돈다"를 재는 것이고, 결함은 문서로 남긴다.
+    //
+    // 해시를 서로 직접 비교해도 되는 이유도 같다: 클라는 서버보다 항상 한 tick 뒤처지므로,
+    // 월드가 정지해 있을 때만 두 해시가 같아진다.
+    RecoveryReport DriveUntilRecovered(EF::World& clientWorld, EF::World& serverWorld,
+                                       EF::NetworkSyncSystem& clientSync, EF::Fixed64 dt,
+                                       uint64_t startTick, uint64_t budgetTicks) {
+        clientSync.QueueLocalInput(EF::InputCommand{}); // 이동 정지(빈 buttonMask)
+
+        RecoveryReport report;
+        uint64_t lastSnapshotTick = clientSync.LastSnapshotTick();
+
+        uint64_t tick = startTick;
+        for (uint64_t elapsed = 1; elapsed <= budgetTicks; ++elapsed, ++tick) {
+            StepLockstepPair(clientWorld, serverWorld, dt, tick);
+
+            if (clientSync.LastSnapshotTick() != lastSnapshotTick) {
+                lastSnapshotTick = clientSync.LastSnapshotTick();
+                ++report.appliedSnapshots;
+            }
+
+            if (!clientSync.HasHashMismatch() && clientWorld.ComputeHash() == serverWorld.ComputeHash()) {
+                report.ticksUntilRecovered = elapsed;
+                ++tick;
+                break;
+            }
+        }
+
+        report.nextTick = tick;
+        return report;
+    }
+}
+
+// (1) 탐지 — 확정 입력 하나를 놓치면 TickHash 비교가 그걸 잡아낸다.
+TEST_CASE(Network, SkippedConfirmedInputFrameIsDetectedByTickHash) {
+    EF::World serverWorld;
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = WireLockstepPair(serverWorld, clientWorld);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(clientWorld, serverWorld, clientSync, dt, clientId);
+
+    EXPECT_TRUE(clientSync.HasSnapshot());
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+    EXPECT_TRUE(clientId != 0);
+
+    const PlayerProbe before = ProbePlayer(clientWorld, clientId);
+    EXPECT_TRUE(before.found);
+    const uint64_t simTickBefore = clientSync.ClientSimTick();
+
+    // 여기서 확정 프레임 하나를 통째로 놓친다(디버그 주입).
+    clientSync.DebugSkipNextConfirmedInputFrameOnce();
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 1);
+
+    const PlayerProbe after = ProbePlayer(clientWorld, clientId);
+    EXPECT_TRUE(after.found);
+
+    // (a) 주입이 실제로 월드를 갈라놓았는가. 이 단언이 없으면 "건너뛴 프레임이 no-op이라
+    //     아무 일도 안 일어났는데 통과"가 가능해진다 — 그러면 아래 (c)는 아무것도 증명하지 못한다.
+    EXPECT_TRUE(after.position == before.position);
+
+    // (b) 멈춘 게 아니라 **어긋난** 것이다. tick은 정상 진행해야 한다.
+    //     (여기서 tick까지 멈추면 그냥 뒤처진 클라이언트라 디싱크 시나리오가 아니다.)
+    EXPECT_EQ(clientSync.ClientSimTick(), simTickBefore + 1);
+
+    // (c) 그리고 TickHash 비교가 그 사실을 잡아냈다.
+    //     실측: 서버가 그 tick의 TickHash를 이미 보내 둔 상태라 **주입과 같은 tick에** 탐지된다.
+    EXPECT_TRUE(clientSync.HasHashMismatch());
+}
+
+// (2) 복구 — 불일치를 본 클라가 새 스냅샷을 받아 서버와 다시 일치한다.
+TEST_CASE(Network, DesyncedClientRecoversThroughResyncSnapshot) {
+    EF::World serverWorld;
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = WireLockstepPair(serverWorld, clientWorld);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(clientWorld, serverWorld, clientSync, dt, clientId);
+
+    clientSync.DebugSkipNextConfirmedInputFrameOnce();
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 1);
+    EXPECT_TRUE(clientSync.HasHashMismatch());
+    const uint64_t snapshotTickBeforeRecovery = clientSync.LastSnapshotTick();
+
+    // 예산 30 tick(50Hz에서 0.6초). 실측은 3 tick / 스냅샷 3개다 —
+    // 예산을 실측에 딱 맞추면 무관한 지연에도 깨지므로 한 자리 여유를 뒀다.
+    constexpr uint64_t kRecoveryBudgetTicks = 30;
+    const RecoveryReport report =
+        DriveUntilRecovered(clientWorld, serverWorld, clientSync, dt, tick, kRecoveryBudgetTicks);
+
+    EXPECT_TRUE(report.ticksUntilRecovered != 0);
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    // 복구가 "새 스냅샷을 받아서" 일어났는지 확인한다. 이게 없으면 우연히 상태가
+    // 다시 맞아떨어진 경우와 구분되지 않는다.
+    EXPECT_TRUE(report.appliedSnapshots >= 1);
+    EXPECT_TRUE(clientSync.LastSnapshotTick() > snapshotTickBeforeRecovery);
+
+    // 위치까지 같아야 한다(해시는 같은데 위치가 다르면 해시 쪽을 의심해야 한다).
+    const PlayerProbe serverPlayer = ProbePlayer(serverWorld, clientId);
+    const PlayerProbe clientPlayer = ProbePlayer(clientWorld, clientId);
+    EXPECT_TRUE(serverPlayer.found);
+    EXPECT_TRUE(clientPlayer.found);
+    EXPECT_TRUE(serverPlayer.position == clientPlayer.position);
+}
+
+// (3) 복구 이후 — 다시 같은 확정 입력으로 진행해도 계속 일치한다.
+//
+// 이걸 따로 확인하는 이유: 스냅샷을 덮어쓰는 과정에서 클라의 tick 기준선
+// (clientSimTick / m_localHashByTick)이 어긋난 채 남으면, 복구 직후에는 멀쩡해 보여도
+// 다음 입력부터 다시 불일치가 뜬다. "복구했다"는 그 다음 tick들까지 봐야 참이 된다.
+TEST_CASE(Network, RecoveredClientKeepsMatchingServerAfterResync) {
+    EF::World serverWorld;
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = WireLockstepPair(serverWorld, clientWorld);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(clientWorld, serverWorld, clientSync, dt, clientId);
+
+    clientSync.DebugSkipNextConfirmedInputFrameOnce();
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 1);
+
+    constexpr uint64_t kRecoveryBudgetTicks = 30;
+    const RecoveryReport report =
+        DriveUntilRecovered(clientWorld, serverWorld, clientSync, dt, tick, kRecoveryBudgetTicks);
+    EXPECT_TRUE(report.ticksUntilRecovered != 0);
+    tick = report.nextTick;
+    const uint64_t snapshotTickAtRecovery = clientSync.LastSnapshotTick();
+
+    // 복구 뒤 다시 움직인다. 이번엔 주입이 없으므로 끝까지 붙어 있어야 한다.
+    clientSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveForward });
+    constexpr uint64_t kPostRecoveryMoveTicks = 12;
+    for (uint64_t i = 0; i < kPostRecoveryMoveTicks; ++i, ++tick) {
+        StepLockstepPair(clientWorld, serverWorld, dt, tick);
+        // 움직이는 동안에는 클라가 한 tick 뒤처져 해시가 다를 수 있다.
+        // 그래서 여기서 보는 것은 raw 해시가 아니라 tick을 맞춰 비교하는 불일치 플래그다.
+        EXPECT_FALSE(clientSync.HasHashMismatch());
+    }
+
+    // 다시 멈추고 따라잡히면 해시까지 같아야 한다.
+    clientSync.QueueLocalInput(EF::InputCommand{});
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 10);
+
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+
+    // 복구 이후로는 스냅샷이 더 오지 않았어야 한다 — 왔다면 조용히 resync가 반복되고
+    // 있다는 뜻이고, 그건 "복구됐다"가 아니라 "계속 덮어쓰는 중"이다.
+    EXPECT_EQ(clientSync.LastSnapshotTick(), snapshotTickAtRecovery);
+}
+
+// (4) 대조군 — 주입하지 않으면 같은 각본에서 불일치가 뜨지 않는다.
+//
+// 위 세 테스트가 본 불일치가 **주입 때문**이지 이 파일의 배선(월드 구성, tick 순서,
+// 입력 타이밍) 때문이 아님을 못 박는다. 이게 없으면 "원래 디싱크나는 배선"으로도
+// (1)~(3)이 전부 통과한다.
+TEST_CASE(Network, NoInjectionKeepsCleanSessionFreeOfHashMismatch) {
+    EF::World serverWorld;
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = WireLockstepPair(serverWorld, clientWorld);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(clientWorld, serverWorld, clientSync, dt, clientId);
+
+    // (1)~(3)과 완전히 같은 각본. 다른 것은 DebugSkipNextConfirmedInputFrameOnce()를
+    // 부르지 않는다는 것 하나뿐이다.
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 1);
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+
+    const uint64_t snapshotTickAfterJoin = clientSync.LastSnapshotTick();
+
+    clientSync.QueueLocalInput(EF::InputCommand{});
+    constexpr uint64_t kCleanRunTicks = 40;
+    for (uint64_t i = 0; i < kCleanRunTicks; ++i, ++tick) {
+        StepLockstepPair(clientWorld, serverWorld, dt, tick);
+        EXPECT_FALSE(clientSync.HasHashMismatch());
+    }
+
+    // 조인 이후 스냅샷이 한 번도 더 오지 않았어야 한다 = resync가 돈 적이 없다.
+    EXPECT_EQ(clientSync.LastSnapshotTick(), snapshotTickAfterJoin);
+    EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
+}
