@@ -6,32 +6,24 @@
 #include <string>
 
 #include "Base/IGameApp.hpp"
+#include "Base/InputManager.hpp"
 #include "Base/Logger.hpp"
 #include "Components/PlayerControl.hpp"
-#include "Gameplay/InputMapping.hpp"
 #include "Components/Transform.hpp"
 #include "Components/Velocity.hpp"
+#include "Gameplay/InputMapping.hpp"
 #include "Network/INetworkConnection.hpp"
 #include "Network/LossyConnection.hpp"
 #include "Network/MemoryConnection.hpp"
 #include "Network/NetworkManager.hpp"
 #include "Network/NetworkSyncSystem.hpp"
 #include "Network/UDPConnection.hpp"
-
-// ⚠️ InputManager.hpp 는 헤더에서 <windows.h> 를 include한다. 그리고 windows.h 는
-//    winsock2.h 보다 **먼저** 들어오면 안 된다(winsock1과 충돌하며 경고를 낸다).
-//    그래서 Winsock을 끌고 오는 Network 헤더들 **뒤에** 둔다.
-//
-//    include 순서에 의존하는 상태는 그 자체로 함정이다. 근본 해결은 InputManager가
-//    Win32Window처럼 windows.h 를 .cpp 안으로 숨기는 것이고(Platform/Win32Window.hpp
-//    주석에 같은 논지가 있다), 트랙 I에서 입력을 창 메시지 기반으로 옮길 때 같이 정리한다.
-#include "Base/InputManager.hpp"
 #include "Platform/Win32Window.hpp"
 #include "Render/Camera.hpp"
-#include "Render/RenderSystem.hpp"
-#include "Render/Renderable.hpp"
 #include "Render/Dx11/Dx11Renderer.hpp"
 #include "Render/RenderContext.hpp"
+#include "Render/RenderSystem.hpp"
+#include "Render/Renderable.hpp"
 #include "Render/RenderTypes.hpp"
 
 using namespace EF;
