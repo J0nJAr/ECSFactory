@@ -10,6 +10,7 @@ add_executable(EngineCoreTests
     SparseSetTests.cpp
     TestHarness.hpp
     UITests.cpp
+    WorldHashTests.cpp
 )
 
 # EngineRender는 EngineCore를 PUBLIC으로 링크하므로 둘 다 딸려온다.
@@ -24,6 +25,9 @@ add_test(NAME Gameplay.SameInputsProduceSameHashOnTwoWorlds COMMAND EngineCoreTe
 add_test(NAME Gameplay.InputOnlyAffectsMatchingClientEntity COMMAND EngineCoreTests Gameplay.InputOnlyAffectsMatchingClientEntity)
 add_test(NAME EntityManager.DestroyedEntityIsNotAlive COMMAND EngineCoreTests EntityManager.DestroyedEntityIsNotAlive)
 add_test(NAME EntityManager.ReusedIndexGetsNewVersion COMMAND EngineCoreTests EntityManager.ReusedIndexGetsNewVersion)
+add_test(NAME EntityManager.ResolvedIdForFreedIndexIsNotAlive COMMAND EngineCoreTests EntityManager.ResolvedIdForFreedIndexIsNotAlive)
+add_test(NAME EntityManager.ReusedIndexBecomesAliveAgainWithBumpedVersion COMMAND EngineCoreTests EntityManager.ReusedIndexBecomesAliveAgainWithBumpedVersion)
+add_test(NAME EntityManager.RestoreFromSnapshotRebuildsAliveState COMMAND EngineCoreTests EntityManager.RestoreFromSnapshotRebuildsAliveState)
 add_test(NAME Math.Vector2ArithmeticUsesFixed64Semantics COMMAND EngineCoreTests Math.Vector2ArithmeticUsesFixed64Semantics)
 add_test(NAME Math.Vector3DotCrossAndDistanceProduceExpectedValues COMMAND EngineCoreTests Math.Vector3DotCrossAndDistanceProduceExpectedValues)
 add_test(NAME Math.VectorNormalizeHandlesZeroSafely COMMAND EngineCoreTests Math.VectorNormalizeHandlesZeroSafely)
@@ -122,3 +126,7 @@ add_test(NAME Network.SkippedConfirmedInputFrameIsDetectedByTickHash COMMAND Eng
 add_test(NAME Network.DesyncedClientRecoversThroughResyncSnapshot COMMAND EngineCoreTests Network.DesyncedClientRecoversThroughResyncSnapshot)
 add_test(NAME Network.RecoveredClientKeepsMatchingServerAfterResync COMMAND EngineCoreTests Network.RecoveredClientKeepsMatchingServerAfterResync)
 add_test(NAME Network.NoInjectionKeepsCleanSessionFreeOfHashMismatch COMMAND EngineCoreTests Network.NoInjectionKeepsCleanSessionFreeOfHashMismatch)
+
+# World::ComputeHash가 프로세스 로컬 타입 인덱스 순서에 흔들리지 않는지 확인한다.
+add_test(NAME WorldHash.TypeFirstUseOrderDoesNotChangeHash COMMAND EngineCoreTests WorldHash.TypeFirstUseOrderDoesNotChangeHash)
+add_test(NAME WorldHash.SwappingValuesBetweenTypesStillChangesHash COMMAND EngineCoreTests WorldHash.SwappingValuesBetweenTypesStillChangesHash)

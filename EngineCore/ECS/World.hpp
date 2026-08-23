@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -60,17 +61,13 @@ namespace EF {
     //  - CreateSnapshot / ApplySnapshot은 trivially-copyable 컴포넌트만 다룬다.
     //    ApplySnapshot은 엔티티 할당 상태를 먼저 복원한 뒤 컴포넌트를 채우고,
     //    타입 모양이나 엔티티 index가 어긋나면 아무것도 바꾸지 않고 거부한다.
-    //  - ComputeHash는 trivial 풀의 내용으로 결정론 체크섬을 만든다.
+    //  - ComputeHash는 trivial 풀의 내용으로 결정론 체크섬을 만든다. 풀 순회 순서는
+    //    TypeInfo::hash 오름차순이라 프로세스가 달라도 같은 내용이면 같은 값이 나온다.
     //
     // 이 타입이 하지 않는 일:
     //  - 네트워크를 모른다. 스냅샷을 만들고 적용할 뿐, 보내는 건 NetworkSyncSystem이다.
     //  - 시스템 실행 순서를 정하지 않는다(SystemRegistry::SortSystems는 아직 TODO라
     //    등록 순서대로 실행된다).
-    //
-    // ⚠️ 알려진 결함: ComputeHash가 풀을 **프로세스 로컬 타입 인덱스 순서**로 순회한다.
-    //    타입을 처음 쓰는 순서가 다른 두 프로세스는 월드 내용이 같아도 다른 해시를 낸다.
-    //    지금은 클라·서버가 같은 순서로 등록해서 드러나지 않을 뿐이다.
-    //    (TypeInfo.index는 프로세스 로컬이고 hash만 안정적이다 — CLAUDE.md 참조.)
     class World {
     private:
         Registry m_registry;
@@ -331,6 +328,36 @@ namespace EF {
         /**
          * 결정론 검증용 체크섬. trivially-copyable 풀의 (타입, dense index, 바이트)를 FNV-1a로 섞는다.
          *
+         * **풀 순회 순서는 `TypeInfo::hash` 오름차순으로 고정한다.** 이게 이 함수의 유일한
+         * 비자명한 부분이라 이유를 남긴다.
+         *
+         * `Registry::GetPools()` 가 돌려주는 벡터는 `TypeInfo::index` 로 인덱싱되어 있고,
+         * 그 index는 "이 프로세스에서 그 타입을 처음 쓴 순서"로 매겨지는 런타임 카운터다.
+         * 즉 **프로세스마다 다르다.** FNV-1a는 순서에 민감하므로, 클라와 서버가 타입을 다른
+         * 순서로 처음 쓰면 월드 내용이 완전히 같아도 해시가 갈라진다. 그러면 `TickHash`
+         * 비교가 이걸 디싱크로 읽어 `ResyncRequest` → 새 스냅샷 → 또 불일치의 무한 루프가 된다.
+         * (이 저장소의 규칙은 "네트워크를 넘는 비교는 index가 아니라 hash로"인데,
+         *  정작 체크섬 함수 자신이 그걸 어기고 있었다.)
+         *
+         * 버린 대안:
+         * - **순서 무관한 결합**(풀별 부분해시를 XOR 또는 덧셈으로 합치기). 정렬이 필요 없어
+         *   제일 싸지만, 교환법칙이 성립하는 결합은 충돌을 만들기 쉽다 — XOR이면 내용이 같은
+         *   두 풀이 서로를 지운다. 체크섬의 존재 이유가 차이를 잡는 것이므로 탐지력을 깎는
+         *   교환은 하지 않는다.
+         * - **`Registry` 가 풀을 TypeHash 순으로 정렬해 보관하기.** 그러면 여기선 그냥 돌면
+         *   되지만 index 기반 O(1) 풀 조회를 잃는다. 조회는 컴포넌트를 만질 때마다 일어나고
+         *   `ComputeHash` 는 tick당 한 번이다 — 비용은 드문 쪽이 무는 게 맞다.
+         *
+         * 비용: 컴포넌트 타입 수 P는 수십 규모라 O(P log P) 정렬 + 작은 vector 하나의 할당은,
+         * 이 함수가 어차피 도는 "모든 풀의 전체 바이트"(수천~수만 바이트) 앞에서 무시할 수준이다.
+         * 프로파일에 잡히면 그때 캐시를 넣되, 풀 추가·삭제 무효화까지 함께 설계해야 한다.
+         *
+         * ⚠️ 함정: 서로 다른 두 타입이 같은 `TypeHash` 를 가지면(= 타입 이름 충돌 또는
+         *    `TypeName` 중복 지정) 정렬이 동률이 되고, 동률의 상대 순서는 다시 index 순서
+         *    ─ 즉 프로세스 로컬 ─ 로 돌아간다. `std::stable_sort` 로 바꿔도 소용없다.
+         *    정렬 전 순서 자체가 프로세스마다 다르기 때문이다. 해시 충돌은 여기서 고칠 수 있는
+         *    문제가 아니라 타입 이름 쪽에서 막아야 하는 문제다.
+         *
          * ⚠️ `EntityManager` 상태(version / free list / nextEntityIndex)는 **일부러 섞지 않는다.**
          * 섞으면 디싱크를 더 빨리 잡을 수 있지만, 지금은 서버가 확정 입력 밖에서 엔티티를
          * 스폰하는 경로가 남아 있어서(`NetworkSyncSystem`의 Hello 처리 → `world.CreateEntity()`)
@@ -349,18 +376,35 @@ namespace EF {
                 }
             };
 
+            // 1단계 — 섞을 풀을 고른다. 여기서는 순서를 신경 쓰지 않는다.
+            std::vector<const IPool*> hashedPools;
+            hashedPools.reserve(m_registry.GetPools().size());
+
             for (const auto& pool : m_registry.GetPools()) {
                 if (!pool || !pool->GetType().isTrivial) {
                     continue;
                 }
 
-                const TypeInfo& type = pool->GetType();
-
                 // 표현 전용 컴포넌트는 시뮬레이션 상태가 아니므로 건너뛴다.
                 // 자세한 이유는 RegisterPresentationComponent 주석에 있다.
-                if (m_presentationTypes.contains(type.hash)) {
+                if (m_presentationTypes.contains(pool->GetType().hash)) {
                     continue;
                 }
+
+                hashedPools.push_back(pool.get());
+            }
+
+            // 2단계 — 프로세스 간에 안정적인 기준으로 순서를 고정한다. 위 함수 주석 참조.
+            std::sort(
+                hashedPools.begin(),
+                hashedPools.end(),
+                [](const IPool* lhs, const IPool* rhs) {
+                    return lhs->GetType().hash < rhs->GetType().hash;
+                });
+
+            // 3단계 — 고정된 순서로 섞는다.
+            for (const IPool* pool : hashedPools) {
+                const TypeInfo& type = pool->GetType();
 
                 mixUInt64(type.hash);
                 mixUInt64(static_cast<uint64_t>(type.size));
