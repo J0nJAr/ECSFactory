@@ -112,7 +112,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 - **[docs/design/roadmap.md](docs/design/roadmap.md) — 마일스톤 전체 계획.** 지금 무엇을 왜 그 순서로 만드는지가 여기 있다. "다음에 뭘 해야 하나"는 이 문서를 먼저 본다.
 - **[docs/reference/testing-guide.md](docs/reference/testing-guide.md) — 테스트 가이드.** 무엇을 어떻게 확인하는가. 로컬·다중 기기 실행, 결정론 대조, 지연·손실·디싱크 주입, 새 테스트를 쓸 때의 규칙(빨간불 먼저).
 - **[docs/reference/milestone-codes.md](docs/reference/milestone-codes.md) — 마일스톤 기호 사전.** `R2`·`N1`·`U8` 같은 기호가 무엇을 가리키고 지금 어떤 상태인지의 대조표. **이 기호는 저장소 안에서만 쓴다** — 블로그 글(`docs/blog/`)에는 뜻이 드러나는 말로 풀어 쓴다. 독자는 이 저장소를 볼 수 없다.
-- `docs/design/*.md` — 다음 에이전트·개발자를 대상으로 한 **핸드오프 스펙**: 근거, 불변식, 마일스톤 상태, 함정. 입력·동기화를 건드리기 전에 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)를, 렌더링을 건드리기 전에 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)를, UI를 건드리기 전에 [docs/design/ui-layer.md](docs/design/ui-layer.md)를 읽는다. 뒤의 둘은 **설계 대비 구현이 앞부분만 들어와 있다** — 렌더링은 R0~R3(창·device·쿼드), UI는 U3(앵커 레이아웃)까지다. 나머지는 아직 문서뿐이므로, 각 문서의 마일스톤 표에서 지금 어디까지 왔는지를 먼저 확인할 것.
+- `docs/design/*.md` — 다음 에이전트·개발자를 대상으로 한 **핸드오프 스펙**: 근거, 불변식, 마일스톤 상태, 함정. 입력·동기화를 건드리기 전에 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)를, 렌더링을 건드리기 전에 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)를, UI를 건드리기 전에 [docs/design/ui-layer.md](docs/design/ui-layer.md)를 읽는다. 뒤의 둘은 **설계 대비 구현이 앞부분만 들어와 있다** — 렌더링은 R0~R6(창·device·카메라·ECS 연결·실제 입력), UI는 U3(앵커 레이아웃)까지다. 나머지는 아직 문서뿐이므로, 각 문서의 마일스톤 표에서 지금 어디까지 왔는지를 먼저 확인할 것.
 - `docs/blog/*.md` — 각 계층을 만든 순서대로 쓴 서술형 기록(05 패킷 → 06 동기화 상태머신 → 07 신뢰성 UDP → 08 lockstep → 09 결정론 스폰 → 10 렌더 타깃 분리·창 → 11 DX11 첫 픽셀 → 12 화면에서 결정론을 본다).
   - ⚠️ **`docs/blog/`에 있다고 발행된 것은 아니다.** 티스토리 발행은 붙여넣기 수동 작업이라 저장소가 앞서간다. 2026-08-23 기준 발행분은 **9편까지**(`machamy.tistory.com/36`)이고 그 뒤에 복습편 두 개(`/37` 1~4편, `/38` 5~9편)가 있다. **10~12편은 미발행.**
   - 이 숫자는 저장소가 알 수 없으므로 금방 낡는다. 확실하지 않으면 **소유자에게 묻거나 블로그를 직접 확인**할 것. 카테고리 페이지는 목록이 잘려 보일 수 있으니 최신 글 목록(블로그 첫 페이지)을 본다.
@@ -220,11 +220,13 @@ tick당 흐름:
 클라:   로컬 입력 수집 → applyTick = serverTickEstimate + 2 (kInputDelayTicks)
         InputCommand ──unreliable, 최대 3회 재전송(kInputRedundancySends)──▶ 서버
 서버:   EnqueueInput()이 그 클라의 비어 있는 inputByTick 슬롯을 채움
+        events = NetworkManager::ConfirmSessionEvents(tick) // 예약된 Join/Leave. clientId 정렬
+        ApplySessionEvents(serverWorld, events)             // 스폰·디스폰 (입력보다 먼저)
         confirmed = NetworkManager::ConfirmInputs(tick)   // clientId 정렬. 결측은 직전 입력 hold
         ApplyConfirmedInputs(serverWorld, confirmed)      // 서버가 먼저 시뮬
-        InputFrame(tick, confirmed) ──reliable──▶ 모든 클라
+        InputFrame(tick, events, confirmed) ──reliable──▶ 모든 클라
         TickHash(tick, world.ComputeHash()) ──sequenced──▶ 모든 클라
-클라:   InputFrame을 버퍼링 → clientSimTick+1 프레임이 있으면 적용하고 ++clientSimTick
+클라:   InputFrame을 버퍼링 → clientSimTick+1 프레임이 있으면 events → inputs 순으로 적용하고 ++clientSimTick
         TickHash 불일치 → ResyncRequest → 새 WorldSnapshot
 ```
 
@@ -246,21 +248,35 @@ tick당 흐름:
 
 ## 코드베이스 현재 상태
 
-동작하고 테스트로 덮여 있는 것: ECS, 고정소수점 수학, 스냅샷·동기화, 다중 클라이언트 라우팅을 갖춘 신뢰성 UDP 전송, 결정론 입력 lockstep 루프(설계 문서의 M1~M7 완료. 시드 기반 손실·재정렬 링크에서의 수렴 테스트 포함), UI 앵커 레이아웃(U3. 순수 함수라 단위 테스트로 덮인다).
+> 이 절은 **2026-08-23 기준**이다. 에이전트 브랜치를 병합할 때 옛 문구가 다시 섞여 들어온 적이 있다
+> (고친 버그가 여기 "아직 있다"로 남아 있었다). 여기 적힌 결함을 고치기 전에 코드와 테스트로 먼저 확인할 것.
 
-동작하지만 **자동 테스트가 없는** 것: 렌더 계층(R0~R3). 창이 뜨고, DX11 device/swapchain이 서고, 화면에 쿼드 하나가 그려진다. device 생성이 GPU나 WARP를 요구해서 테스트 하네스로 감싸지 않았다. 대신 `GameClient.exe --frames 60 --capture shot.ppm`으로 백버퍼를 PPM으로 뽑아 눈으로 확인한다(`Dx11Renderer::CaptureBackBuffer`). 기준 이미지 비교는 아직 없다.
+동작하고 테스트로 덮여 있는 것: ECS, 고정소수점 수학, 스냅샷·동기화, 다중 클라이언트 라우팅을 갖춘 신뢰성 UDP 전송, 결정론 입력 lockstep 루프(M1~M7. 시드 기반 손실·재정렬 링크에서의 수렴 테스트 포함), **결정론 스폰·디스폰**(N1·N2. 접속·해제가 확정 이벤트로 흐른다), 타임아웃 기반 접속 해제, 디싱크 탐지·복구(주입 테스트 포함), 직교 카메라(R4), `RenderSystem`(R5. 가짜 백엔드로 GPU 없이 테스트), 입력 매핑과 조준의 결정론 경계(I1), UI 앵커 레이아웃(U3).
+
+동작하지만 **자동 테스트가 없는** 것: DX11 백엔드(R2·R3), 창(R1), 실제 키보드 배선과 카메라 추적(R6). device 생성과 창이 GPU·데스크톱 세션을 요구해서 하네스로 감싸지 않았다. 대신 실행해서 확인한다 — `--capture` 로 백버퍼를 PPM으로 뽑고, 창 제목의 `tick`·`hash` 를 두 클라에서 대조한다. 방법은 [testing-guide.md](docs/reference/testing-guide.md). 기준 이미지 비교는 아직 없다.
+
+### 지켜야 하는 계약 (어기면 조용히 깨진다)
+
+- 📌 **스냅샷 tick 라벨은 `SimulatedThroughTick(tick)` = `tick - 1`이다.** 서버의 한 tick은 `수신 처리 → 입력 확정·적용 → TickHash 방송` 순이고 스냅샷은 첫 단계에서 만들어지므로, 그 월드는 아직 `tick`의 입력을 적용하지 않은 상태다. `tick`으로 붙이면 클라가 `InputFrame{tick}`을 "이미 지난 것"으로 버린다 — resync마다 확정 입력을 한 프레임 삼키던 버그였다. 정지한 월드에서는 삼킨 프레임이 no-op이라 우연히 복구되어 오래 숨어 있었다. `Network.DesyncRecoversWhileWorldKeepsMoving`이 지킨다.
+- 📌 **월드를 바꾸는 사건은 확정 경로로만.** 접속·해제는 서버가 `QueueSessionEvent(tick + 1, …)`로 예약하고 `InputFrame.events`에 실려 모든 peer가 같은 tick에 적용한다. `Hello`나 타임아웃 처리 자리에서 `CreateEntity`/`DestroyEntity`를 직접 부르면 그 순간 `EntityManager`가 갈라진다. 반면 clientId 발급, endpoint 등록, 신뢰성 채널 같은 **서버 장부**는 월드 상태가 아니라 거기서 다뤄도 된다. `Network.SecondClientJoinDoesNotResyncTheFirst`가 지킨다.
+- 📌 **적용 순서는 `events → inputs`, 이벤트 정렬은 `ConfirmSessionEvents` 한 곳에서.** 같은 tick에 접속과 입력이 같이 오면 엔티티가 먼저 있어야 한다. 정렬 순서가 곧 `EntityId`를 정하므로 적용하는 쪽에서 다시 정렬하지 않는다.
+- 📌 **클라 전용 표현 컴포넌트는 `RegisterPresentationComponent<T>()`로 해시에서 뺀다.** 서버엔 그 풀이 없어서, 빼지 않으면 매 tick 불일치 → 무한 resync가 된다. 기본값은 "해시에 포함"이다(깜빡 잊으면 시끄럽게 실패하는 쪽).
+- 📌 **`View::ForEach`는 `EntityId`가 아니라 `EntityIndex`를 준다.** `EntityId`로 받아도 암묵 변환으로 컴파일되지만 version이 0인 가짜 id가 된다. id가 필요하면 range-for를 쓴다.
+- 📌 **클라 생존 판정은 전송 계층(`PumpConnection`)에서, 등록 시점에 반드시 현재 tick을 찍는다.** 조용한 클라는 ack만 보내는데 ack만 든 데이터그램은 `TryReceive`로 올라오지 않는다. 그리고 등록 시 0으로 두면 오래 떠 있던 서버가 신규 접속을 즉시 쫓아낸다(`Network.ClientCanJoinLongRunningServer`). 타임아웃은 250 tick(5초).
+- 📌 **`kReliabilityVersion`은 2다.** `InputFrame`에 세션 이벤트가 붙어 앱 레코드 배치가 바뀌었다. 층 구분상 앱 계층 버전(Hello/Welcome)이 맞는 자리지만 그게 없어서 여기서 막는다.
 
 아직 **미완성 / 스텁**인 것:
 
-- 실제 키보드·마우스 입력(`Input`, [Base/InputManager.hpp](EngineCore/Base/InputManager.hpp))이 `InputCommand`로 변환되지 않는다. 테스트는 `NetworkSyncSystem::QueueLocalInput`을 직접 호출한다.
 - 클라이언트 예측·롤백 없음 — 클라는 입력 지연 + RTT만큼 뒤처진다.
-- **결정론 스폰/디스폰** 🟡 절반 완료 — 스냅샷이 `EntityManager` 상태(version / free list / next index)를 나르지 않던 문제는 해결됐다(N1). 남은 것은 **스폰·디스폰이 확정 입력 경로에서만 일어나게 하는 것**(N2)이다. 지금은 `NetworkSyncSystem`의 `Hello` 처리가 확정 입력 밖에서 `CreateEntity()`를 부른다. 건설·스폰이 필요한 작업 전에 정리할 것 — [roadmap.md §6](docs/design/roadmap.md).
-- ⚠️ **디싱크 복구(resync)가 스냅샷 tick 라벨을 한 칸 앞서 붙인다.** 서버가 `ResyncRequest`에 답하는 `CreateSnapshot(tick)`은 `ConfirmInputs(tick)` **적용 전** 상태인데 라벨은 `tick`으로 나간다. 클라는 그걸 받고 `InputFrame(tick)`을 버리므로 **resync마다 확정 입력 한 프레임을 잃고**, 월드가 매 tick 바뀌는 동안에는 복구가 끝나지 않는다(tick마다 전체 스냅샷을 받는 무한 루프. 200 tick 실측 확인). 조인 핸드셰이크도 같은 경로를 밟는데 접속 순간엔 아무도 안 움직여서 안 드러날 뿐이다. 상세와 재현은 [deterministic-input-lockstep.md §7](docs/design/deterministic-input-lockstep.md), 탐지·복구 경로 테스트는 `Network.*ResyncSnapshot` 계열.
-- **렌더링은 R6까지.** 남은 것은 보간(R7)뿐이다 — 50Hz 시뮬을 그대로 그리므로 빠르게 움직이면 끊겨 보인다. 텍스처·깊이 버퍼·컬링도 아직 없다(컬러 쿼드만).
-- 📌 **스냅샷 tick 라벨은 `SimulatedThroughTick(tick)` = `tick - 1`이다.** 서버의 한 tick은 `수신 처리 → 입력 확정·적용 → TickHash 방송` 순이고 스냅샷은 첫 단계에서 만들어지므로, 그 월드는 아직 `tick`의 입력을 적용하지 않은 상태다. 라벨이 곧 클라의 `clientSimTick`이 되므로 `tick`으로 붙이면 클라가 `InputFrame{tick}`을 "이미 지난 것"으로 버린다 — **resync마다 확정 입력을 한 프레임 삼키던 버그였다.** 정지한 월드에서는 삼킨 프레임이 no-op이라 우연히 복구되어 오래 숨어 있었다. `Network.DesyncRecoversWhileWorldKeepsMoving`이 이 계약을 지킨다.
-- ⚠️ **접속 해제 경로가 없다.** 나간 클라이언트의 플레이어 엔티티가 영원히 남고, 재접속하면 endpoint가 달라져 새 `clientId` + 새 스폰이 되어 유령이 쌓인다.
-- **UI는 U3까지만.** 앵커 레이아웃 계산은 있지만 그걸 그릴 `UIDrawList`(U1)와 폰트(U2)가 없어서 화면에 UI가 나오지 않는다.
-- `SystemRegistry::SortSystems()`는 TODO. 시스템은 등록 순서대로 실행된다.
+- **보간(R7) 없음** — 50Hz 시뮬을 그대로 그리므로 빠르게 움직이면 끊겨 보인다. 텍스처·깊이 버퍼·컬링도 없다(컬러 쿼드만).
+- **UI는 U3까지만.** 그릴 수단(U1 드로우 목록, U2 폰트)이 없어서 화면에 UI가 안 나온다. 디버그 표시는 창 제목으로 대신한다.
+- **마우스 조준은 변환 계층만 있다.** `InputMapping`이 픽셀 → `Fixed64` 경계를 처리하지만 시뮬레이션(`ApplyConfirmedInputs`)이 아직 `aimYaw`/`aimPitch`를 소비하지 않는다. 소비를 시작할 때 서버 쪽 pitch 재클램프가 필요하다.
+- **입력이 시스템 전역 키 상태(`GetAsyncKeyState`)를 읽는다.** 창이 여럿이면 `IWindow::HasFocus()`로 걸러야 한다. 근본 해결은 창 메시지 기반 입력(U6와 함께).
+- **해제는 파괴다.** 나갔다 들어오면 새 `clientId` + 새 캐릭터가 된다. 설계 의도는 `Dormant`(얼리기)이고 세션/영속 플레이어/캐릭터 분리(§8)와 함께 한다.
+- **`ComputeHash()`에 `EntityManager` 상태가 아직 안 들어간다.** N2가 끝났으므로 이제 넣어도 된다 — 넣으면 엔티티 할당이 갈라지는 것을 바로 잡는다.
+- **`ResyncRequest`에 백오프가 없다.** in-flight 하나로 제한해서 폭주는 막혔지만, 복구가 반복 실패하는 상황에서 간격을 늘리지는 않는다.
+- **앱 계층 버전 검사 없음.** `Packet.hpp`의 `kProtocolVersion`은 여전히 아무도 읽지 않는다.
+- `SystemRegistry::SortSystems()`는 TODO. 시스템은 등록 순서대로 실행된다 — 클라이언트는 `LossyLinkPumpSystem → NetworkSyncSystem`, `PlayerVisualSystem → RenderSystem` 순서에 실제로 의존한다.
 
 ## 실행해서 눈으로 확인하기
 

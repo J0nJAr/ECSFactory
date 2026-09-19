@@ -34,7 +34,10 @@
 - 접속 handshake(`Hello → Welcome → TypeTable → WorldSnapshot`)를 `NetworkSyncSystem`이 fixed tick 안에서 처리
 - **결정론 입력 lockstep** — 클라가 미래 tick 입력을 제출하고, 서버가 확정(결측은 직전 입력 hold)해서 `InputFrame`으로 전 클라에 재전파하고, 모두가 같은 확정 입력으로 같은 시뮬을 돌림
 - `TickHash` 주기 송수신으로 디싱크 감지, 손실·재정렬 링크에서의 수렴 테스트
-- **렌더 계층 골격** — `EngineRender` 타깃 분리(서버는 DX11을 링크조차 하지 않고, CI가 임포트 DLL로 검사), `Win32Window`(메시지 펌프), DX11 device/swapchain/RTV, 런타임 셰이더 컴파일 + Dynamic VB로 **화면에 쿼드 하나**. `--frames N --capture x.ppm`으로 백버퍼를 파일로 뽑아 확인한다
+- **렌더 계층 골격** — `EngineRender` 타깃 분리(서버는 DX11을 링크조차 하지 않고, CI가 임포트 DLL로 검사), `Win32Window`(메시지 펌프), DX11 device/swapchain/RTV, 런타임 셰이더 컴파일 + Dynamic VB. `--frames N --capture x.ppm`으로 백버퍼를 파일로 뽑아 확인한다
+- **화면과 시뮬레이션 연결** — 직교 카메라(월드 XZ → 화면), `Renderable` + `RenderSystem`, 실제 키보드 → `InputCommand`, 내 플레이어를 따라가는 카메라. **키를 누르면 서버 확정을 거쳐 두 창의 캐릭터가 같이 움직인다**
+- **결정론 스폰·디스폰** — 접속·해제가 확정 이벤트(`SessionEvent`)로 `InputFrame`에 실려 흐른다. 누가 들어와도 기존 클라이언트가 resync하지 않는다. 타임아웃(5초)으로 사라진 클라이언트를 정리한다
+- **사람 없이 돌리는 검증** — 창 제목의 `tick`·`hash`, 가짜 키보드(`--input-script`), 시드 고정 링크 열화(`--net-loss` 등), 디싱크 주입. 방법은 [docs/reference/testing-guide.md](docs/reference/testing-guide.md)
 - UI 앵커 레이아웃 코어(순수 함수, 단위 테스트 11케이스). 그릴 수단이 아직 없어 화면엔 안 나온다
 
 > 초기 스케치에는 "락스텝보다는 서버 시간에 맞춰 클라가 입력 전달"이라고 적혀 있었지만,
@@ -43,15 +46,12 @@
 
 ## 다음 할 일
 
-지금 순서는 **렌더링 → 엔진 위생 → 결정론 스폰 → 공장 게임플레이**입니다.
+렌더링·실제 입력·결정론 스폰이 끝나서 **공장 게임플레이를 시작할 수 있는 상태**입니다.
 
-1. **렌더링 이어서** (`docs/design/rendering-dx11.md`) — 창·device·쿼드(R0~R3)는 끝났습니다. 남은 것은
-   **카메라(R4, ortho 투영으로 월드 좌표를 화면에 매핑)** → **`RenderSystem`(R5, `View<Transform, Renderable>`을 순회해 그리기)** → 보간(R7).
-   지금은 그릴 것을 `GameClient/main.cpp`가 하드코딩하고 있어 ECS와 화면이 연결되어 있지 않습니다.
-   목표는 "내 키보드 입력이 서버 확정을 거쳐 화면 속 엔티티를 움직인다".
-2. **`InputManager` → `InputCommand` 변환** — 창이 생겼으므로 이제 가능합니다. 지금은 테스트가 `QueueLocalInput`을 직접 호출 중.
-3. **엔진 위생** — `SystemRegistry::SortSystems()`(현재 TODO, 등록 순서대로 실행 중). 렌더를 별도 CMake 타깃으로 분리하는 일은 R0에서 끝냈습니다.
-4. **결정론 스폰** — 건설 = 엔티티 스폰이라 공장 게임 전체의 전제조건입니다. `ApplySnapshot`이 `EntityManager` 상태(version / free list / next index)를 복원하지 않아 스냅샷 이후 index 할당이 갈라지던 문제는 **N1에서 해결**했고, 남은 것은 N2(스폰·디스폰을 확정 입력 경로에서만 일어나게 하기)입니다. [roadmap.md §6](docs/design/roadmap.md) 참조.
+1. **보간(R7)** — 50Hz 시뮬을 그대로 그려서 빠르게 움직이면 끊겨 보입니다. 이전 위치와 현재 위치를 누산기 비율로 섞어 그립니다.
+2. **디버그 오버레이(U1 드로우 목록 → U2 폰트 → U5)** — 지금은 창 제목이 그 역할을 대신합니다. 공장 게임을 만들면서 화면 안에 상태를 띄워야 할 일이 많아집니다.
+3. **엔진 위생** — `SystemRegistry::SortSystems()`(현재 TODO). 클라이언트가 이미 시스템 등록 순서에 의존하고 있어서(`PlayerVisualSystem → RenderSystem` 등) 우선순위가 올라갔습니다. 그리고 `ComputeHash()`에 `EntityManager` 상태 넣기 — N2가 끝나서 이제 가능합니다.
+4. **직렬화 & 리플렉션(S2)** — 공장 게임플레이보다 먼저 합니다. G 트랙이 컴포넌트를 여럿 새로 만드는데, 리플렉션이 먼저 있으면 처음부터 갖고 태어납니다. [roadmap.md §7.5](docs/design/roadmap.md).
 5. **공장 게임플레이** — 그리드 좌표계 → 건설/철거 → 채굴기 → 벨트 → 저장고.
    첫 결승선: **아이템이 채굴기에서 저장고까지 자동으로 흐르고, 그게 화면에 보이고, 클라와 서버 해시가 일치한다.**
 
@@ -84,7 +84,7 @@
 - `MemoryConnection`은 호스트/싱글플레이처럼 같은 프로세스 안의 통신에 사용합니다.
 - `UDPConnection`은 원격 클라이언트와 dedicated server 사이 통신에 사용합니다.
 - `NetworkManager`는 패킷 송수신, 타입 테이블, 월드 snapshot, 입력 명령, tick hash, 재동기화 요청을 담당합니다.
-- 실제 키보드/마우스 입력을 `InputCommand`로 만드는 시스템은 개발중입니다.
+- `GameClient`는 창을 띄우고 DX11로 월드를 그리며, 실제 키보드(WASD·방향키)를 `InputCommand`로 바꿔 서버에 보냅니다. 마우스 조준은 변환 계층만 있고 시뮬레이션이 아직 쓰지 않습니다.
 
 ## 빌드와 테스트
 
@@ -215,89 +215,83 @@ sequenceDiagram
     participant ClientWorld
 
     Client->>Server: Hello
+    Server->>Client: Welcome(clientId)
     Server->>Client: TypeTable
     Client->>Server: WorldSnapshotRequest
-    Server->>ServerWorld: CreateSnapshot(serverTick)
+    Server->>ServerWorld: CreateSnapshot(serverTick - 1)
     ServerWorld-->>Server: WorldSnapshot
     Server->>Client: WorldSnapshot
     Client->>ClientWorld: ApplySnapshot(snapshot)
     ClientWorld-->>Client: ComputeHash()
 ```
 
-## 동기화
+## 동기화 — 결정론 입력 lockstep
 
-현재 동기화 방향은 서버 권위입니다.
+이 엔진은 상태가 아니라 **입력**을 중계합니다. 서버와 모든 클라이언트가 같은 확정 입력으로 같은 시뮬레이션을 돌립니다. 스냅샷은 **조인과 디싱크 복구 때만** 씁니다.
 
-- 클라이언트는 tick 기준 `InputCommand`를 서버로 보냅니다.
-- 서버는 클라이언트별 pending input queue에 저장합니다.
-- 서버는 필요한 시점에 `WorldSnapshot`을 보냅니다.
-- 클라이언트는 snapshot을 적용해 서버 상태와 맞춥니다.
-- `World::ComputeHash()`로 월드 상태 hash를 계산합니다.
-- hash가 다르면 `ResyncRequest`를 보내고 서버 snapshot을 다시 적용합니다.
-
-기본 설계상 1초마다 hash 비교를 수행할 수 있도록 `TickHash` 패킷이 준비되어 있습니다.
-주기적으로 보내는 시스템은 아직 게임 시스템으로 연결되지 않았습니다.
+- 클라이언트는 미래 tick(서버 tick 추정 + 2)을 겨냥한 `InputCommand`를 보냅니다.
+- 서버는 tick마다 입력을 **확정**합니다(clientId 정렬, 결측은 직전 입력 hold). 같은 tick에 예약된 접속·해제(`SessionEvent`)도 함께 확정합니다.
+- 서버가 먼저 적용한 뒤, 확정한 것 전부를 `InputFrame`(reliable)으로 모든 클라이언트에 보냅니다.
+- 클라이언트는 `InputFrame`을 tick 순서대로 **이벤트 → 입력** 순으로 적용합니다.
+- 서버는 매 tick `TickHash`를 보내고, 클라이언트는 **그 tick을 시뮬레이션한 순간의** 로컬 해시와 비교합니다. 어긋나면 `ResyncRequest` → 새 `WorldSnapshot`.
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant Server
-    participant ServerWorld
-    participant ClientWorld
+    participant C as Client
+    participant S as Server
 
-    Client->>Server: InputCommand(clientId, tick, sequence, buttonMask)
-    Server->>Server: Queue input by clientId/tick
-    Server->>ServerWorld: FixedUpdate(serverTick)
-    ServerWorld-->>Server: ComputeHash()
-    Server->>Client: TickHash(serverTick, serverHash)
-    ClientWorld-->>Client: ComputeHash()
-    alt hash matches
-        Client->>Client: Continue simulation
-    else hash mismatch
-        Client->>Server: ResyncRequest(tick, localHash, serverHash)
-        Server->>ServerWorld: CreateSnapshot(serverTick)
-        Server->>Client: WorldSnapshot
-        Client->>ClientWorld: ApplySnapshot(snapshot)
+    C->>S: InputCommand(tick = 추정 + 2)
+    Note over S: ConfirmSessionEvents(tick)<br/>ConfirmInputs(tick)<br/>서버 월드에 먼저 적용
+    S->>C: InputFrame(tick, events, inputs)
+    S->>C: TickHash(tick, hash)
+    Note over C: events → inputs 순으로 적용<br/>그 tick의 해시를 기록
+    alt 해시 일치
+        C->>C: 계속 진행
+    else 불일치
+        C->>S: ResyncRequest (한 번에 하나만)
+        S->>C: WorldSnapshot
     end
 ```
 
-## 입력
+전체 스펙과 근거는 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)에 있습니다.
 
-현재 입력 패킷은 스텁입니다.
+## 입력
 
 ```cpp
 struct InputCommand {
     uint32_t clientId;
-    uint64_t tick;
+    uint64_t tick;        // 이 입력이 적용될 tick
     uint32_t sequence;
-    uint64_t buttonMask;
-    Fixed64 aimYaw;
+    uint64_t buttonMask;  // kInputMoveRight / Left / Forward / Back
+    Fixed64 aimYaw;       // 조준은 픽셀(float)이 아니라 Fixed64로 싣는다
     Fixed64 aimPitch;
 };
 ```
 
-아직 구현되지 않은 부분:
+- 키보드(WASD·방향키) → `BuildButtonMask` → `QueueLocalInput`. tick당 하나만 넣습니다.
+- 마우스 델타를 `Fixed64` 조준으로 바꾸는 경계는 `Gameplay/InputMapping`에 있습니다. 시뮬레이션은 아직 조준을 쓰지 않습니다.
+- 사람 없이 돌릴 때는 `--input-script "20:W,80:"`로 같은 경로에 가짜 입력을 넣습니다.
 
-- `InputManager` 상태를 `InputCommand`로 변환
-- 클라이언트 tick에 맞춰 입력 전송
-- 서버 tick에서 입력 소비
-- 클라이언트 prediction/rollback/replay
+아직 없는 것: 클라이언트 prediction/rollback(공장 장르에서 정말 필요한지부터 확인할 예정).
 
 ## 네트워크
 
-### INetworkConnection
+세 계층이 쌓여 있습니다. 전송 계층은 패킷을 모르고, 동기화 시스템은 소켓을 만지지 않습니다.
 
-모든 통신은 `INetworkConnection` 인터페이스를 통해 수행합니다.
+### 1. 전송 — `INetworkConnection`
+
+데이터그램 단위이고 주소 기반입니다.
 
 ```cpp
-virtual int Send(const void* data, size_t size) = 0;
-virtual int Receive(void* data, size_t size) = 0;
+virtual bool SendTo(const Endpoint& target, std::span<const uint8_t> message) = 0;
+virtual std::optional<Datagram> ReceiveFrom() = 0;   // Datagram{from, bytes}
+virtual Endpoint DefaultPeer() const = 0;
 ```
 
-구현체:
-
-- `MemoryConnection`: 같은 프로세스 안에서 클라이언트와 로컬 서버를 연결
-- `UDPConnection`: dedicated server와 원격 클라이언트 연결
+- `MemoryConnection` — 같은 프로세스(호스트·싱글플레이)
+- `UDPConnection` — dedicated server ↔ 원격 클라이언트(포트 `6780`)
+- `LossyConnection` — 다른 연결을 감싸 손실·지연·중복을 시드 고정으로 주입(검증용)
+- `SimulatedNetwork` — 테스트 전용 인메모리 허브
 
 ```mermaid
 flowchart LR
@@ -312,38 +306,15 @@ flowchart LR
     end
 ```
 
-### NetworkManager
+### 2. 신뢰성 — `ReliabilityChannel`
 
-`NetworkManager`는 connection 리소스로 월드에 추가됩니다.
+원격 endpoint마다 하나. ack·재전송·조각화·재조립·순서를 처리하고, 전달 등급이 셋입니다(`Reliable` / `Sequenced` / `Unreliable`).
 
-담당 기능:
+### 3. 프로토콜 — `NetworkManager`
 
-- `Hello`
-- `TypeTable`
-- `WorldSnapshotRequest`
-- `WorldSnapshot`
-- `InputCommand`
-- `TickHash`
-- `ResyncRequest`
+월드 리소스로 붙습니다. 패킷 타입은 `Hello`, `Welcome`, `TypeTable`, `WorldSnapshotRequest`, `WorldSnapshot`, `InputCommand`, `InputFrame`, `TickHash`, `ResyncRequest`입니다.
 
-서버는 클라이언트별 상태를 `NetworkClientState`로 관리합니다.
-
-- `clientId`
-- 마지막 수신 tick
-- 타입 테이블 수신 여부
-- snapshot 적용 여부
-- pending input queue
-
-```mermaid
-flowchart TB
-    ServerNetwork["Server-side Network Handling"] --> ClientState1["NetworkClientState<br/>clientId=1<br/>pendingInputs"]
-    ServerNetwork --> ClientState2["NetworkClientState<br/>clientId=2<br/>pendingInputs"]
-    ServerNetwork --> ClientStateN["NetworkClientState<br/>clientId=N<br/>pendingInputs"]
-
-    ClientState1 --> InputQueue1["tick -> InputCommand[]"]
-    ClientState2 --> InputQueue2["tick -> InputCommand[]"]
-    ClientStateN --> InputQueueN["tick -> InputCommand[]"]
-```
+서버는 클라이언트별 상태를 `NetworkClientState`로 관리합니다 — endpoint, 조종 엔티티, 아직 확정되지 않은 입력 슬롯(`inputByTick`), 마지막 확정 입력, 마지막으로 소식을 들은 tick(5초 무응답이면 정리). clientId는 페이로드가 아니라 **보낸 endpoint로** 인가합니다(스푸핑 방지).
 
 ### NetUtils
 
@@ -371,5 +342,11 @@ flowchart TB
 
 ## 렌더링
 
-렌더링 계층은 아직 구체화 전입니다.
-현재 엔진 코어는 ECS, deterministic math, network snapshot/sync 기반을 먼저 만들고 있습니다.
+DX11 백엔드가 `IRenderer` 인터페이스 뒤에 있고, `EngineRender`라는 별도 타깃이라 **서버는 DX11을 링크하지 않습니다**(CI가 검사).
+
+- 창: `Win32Window` (`IWindow` 구현)
+- 카메라: 직교 투영. 월드 XZ 평면을 화면에 매핑하고 Y(높이)는 버립니다. 내 플레이어를 따라갑니다.
+- `RenderSystem`: `View<Transform, Renderable>` → `DrawItem` → `IRenderer`. `Fixed64 → float` 변환이 일어나는 유일한 자리입니다.
+- `Renderable`은 클라 전용 표현이라 스냅샷에도 결정론 해시에도 들어가지 않습니다.
+
+아직 없는 것: 보간(50Hz를 그대로 그림), 텍스처, 화면 안 UI. 설계는 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)에 있습니다.
