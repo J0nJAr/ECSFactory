@@ -79,7 +79,10 @@ namespace EF::Internal {
         // 128비트 곱 (high:low)를 고정소수점 스케일만큼 우측 시프트한다.
         constexpr int kFractionalBits = EF::Fixed64FractionalBits;
         const uint64_t shifted = (mul.high << (64 - kFractionalBits)) | (mul.low >> kFractionalBits);
-        return ApplySignedMagnitude(shifted, negative);
+        // GCC의 signed 산술 우측 시프트처럼 음수의 버려진 소수부는
+        // -∞ 방향으로 내린다. 0 방향 절삭은 MSVC와 시뮬레이션을 갈라놓는다.
+        const bool discarded = (mul.low & ((uint64_t{1} << kFractionalBits) - 1)) != 0;
+        return ApplySignedMagnitude(shifted + (negative && discarded ? 1 : 0), negative);
 #endif
     }
 
@@ -94,7 +97,9 @@ namespace EF::Internal {
         return static_cast<uint64_t>(numerator / divisor);
 #elif defined(_MSC_VER) && defined(_M_X64)
         uint64_t remainder = 0;
-        return _udiv128(high, low, divisor, &remainder);
+        // GCC 경로와 같이 몫의 하위 64비트를 돌려준다. high >= divisor를
+        // 그대로 전달하면 MSVC intrinsic은 몫 overflow 예외를 일으킨다.
+        return _udiv128(high % divisor, low, divisor, &remainder);
 #else
         // 단순 long division fallback
         uint64_t quotient = 0;

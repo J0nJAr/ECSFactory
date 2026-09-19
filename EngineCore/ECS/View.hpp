@@ -154,7 +154,7 @@ namespace EF {
                     } 
                     else {
                         // 사용자가 인자를 이상하게 넣으면 컴파일 에러로 멱살을 잡습니다.
-                        static_assert(false, "[EF Engine Error] ForEach callback signature is invalid! "
+                        static_assert(!std::is_same_v<Func, Func>, "[EF Engine Error] ForEach callback signature is invalid! "
                                             "Expected: (EntityIndex, Components&...) OR (Components&...)");
                     }
                 }
