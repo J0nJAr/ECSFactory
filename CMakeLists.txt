@@ -39,3 +39,5 @@ add_subdirectory(EngineCore)
 add_subdirectory(GameServer)
 add_subdirectory(GameClient)
 add_subdirectory(tests)
+
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT GameClient)
