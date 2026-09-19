@@ -20,7 +20,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 if(MSVC)
-    add_compile_options(/W4 /permissive- /Zc:preprocessor)
+    add_compile_options(/W4 /permissive- /utf-8 /Zc:preprocessor)
 
     if(POLICY CMP0141)
         cmake_policy(SET CMP0141 NEW)
@@ -30,7 +30,7 @@ if(MSVC)
         )
     endif()
 else()
-    add_compile_options(-Wall -Wextra)
+    add_compile_options(-Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
 enable_testing()

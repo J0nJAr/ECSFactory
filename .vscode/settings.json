@@ -1,4 +1,9 @@
 {
+  "files.encoding": "utf8",
+  "files.autoGuessEncoding": false,
+  "[powershell]": {
+    "files.encoding": "utf8bom"
+  },
   "cmake.useCMakePresets": "always",
   "cmake.configureOnOpen": true,
   "cmake.defaultConfigurePreset": "x64-debug",

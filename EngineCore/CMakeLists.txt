@@ -4,6 +4,7 @@ target_sources(EngineCore
     PRIVATE
         Base/GameEngine.cpp
         Base/InputManager.cpp
+        Base/Logger.cpp
         ECS/EntityCommandBuffer.cpp
         Gameplay/InputMapping.cpp
         Gameplay/PlayerMovement.cpp

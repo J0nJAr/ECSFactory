@@ -25,6 +25,8 @@ ctest --preset default -R Network.WorldSnapshotRoundTripCopiesTrivialComponents
 
 ## Coding Style & Naming Conventions
 
+프로젝트 전체의 한글 소스·문서·설정·로그는 **UTF-8**을 사용한다. 파일 입출력 시 인코딩을 명시하고, CP949/시스템 기본 인코딩에 의존하지 않는다. Windows PowerShell 5.1용 `.ps1`은 UTF-8 BOM으로 저장한다(UTF-8 판별용). 컴파일러의 소스 및 실행 문자열 인코딩도 UTF-8을 유지한다.
+
 Use C++20, namespace `EF` for engine code and `EF::Network` for networking. Follow the existing style: four-space indentation, PascalCase type names, PascalCase public methods, and `k`-prefixed constants such as `kNullEntity`. Prefer deterministic simulation types (`Fixed64`, `FromInt`, `FromRaw`) in gameplay logic; keep floating-point conversions for initialization, rendering, or debugging. CMake source lists are explicit, so register new files in the relevant `CMakeLists.txt`.
 
 Use the helper when adding artifacts:
