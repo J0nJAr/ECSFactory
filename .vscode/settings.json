@@ -6,10 +6,9 @@
   },
   "cmake.useCMakePresets": "always",
   "cmake.configureOnOpen": true,
-  "cmake.defaultConfigurePreset": "x64-debug",
+  "cmake.defaultConfigurePreset": "default",
   "C_Cpp.intelliSenseEngine": "default",
   "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
-  "C_Cpp.default.compileCommands": "${workspaceFolder}/out/build/x64-debug/compile_commands.json",
   "C_Cpp.errorSquiggles": "disabled",
   "clangd.enable": false
 }

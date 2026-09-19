@@ -89,6 +89,10 @@
 
 ## 빌드와 테스트
 
+**개발 도구:** 루트의 `Launch-ECSFactory.cmd`를 더블클릭하면 빌드·테스트·싱글/멀티 실행과
+VS Code / Visual Studio 열기를 제공하는 런처가 뜹니다.
+설치 및 디버깅 방법은 [개발 환경과 런처](docs/reference/development-tools.md)를 참고하세요.
+
 ```powershell
 cmake --build --preset default
 ctest --preset default
