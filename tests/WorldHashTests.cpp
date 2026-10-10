@@ -85,3 +85,66 @@ TEST_CASE(WorldHash, SwappingValuesBetweenTypesStillChangesHash) {
 
     EXPECT_TRUE(original.ComputeHash() != swapped.ComputeHash());
 }
+
+// N4.1 — 컴포넌트가 같아도 엔티티 할당 상태가 다르면 다른 해시여야 한다.
+//
+// 두 월드 모두 index 0 엔티티에 같은 컴포넌트 하나만 붙어 있다. 차이는 한쪽이 엔티티를
+// 하나 더 만들었다 지웠다는 것뿐이다 — 컴포넌트 풀에는 흔적이 없지만 next index·version·
+// free list가 달라서, 다음 `CreateEntity()`가 서로 다른 id를 낸다. lockstep에서 이건
+// 곧 디싱크이므로 해시가 지금 잡아야 한다(예전엔 섞지 않아서 놓쳤다).
+TEST_CASE(WorldHash, EntityAllocationDifferenceChangesHash) {
+    EF::World plain;
+    const EF::EntityId plainEntity = plain.CreateEntity();
+    plain.AddComponent<AlphaAsServer>(plainEntity, AlphaAsServer{ 5 });
+
+    EF::World churned;
+    const EF::EntityId churnedEntity = churned.CreateEntity();
+    const EF::EntityId temporary = churned.CreateEntity();
+    churned.DestroyEntity(temporary);
+    churned.AddComponent<AlphaAsServer>(churnedEntity, AlphaAsServer{ 5 });
+
+    // 전제: 살아 있는 엔티티와 컴포넌트는 같다(같은 index, 같은 값).
+    EXPECT_EQ(EF::GetEntityIndex(plainEntity), EF::GetEntityIndex(churnedEntity));
+
+    EXPECT_TRUE(plain.ComputeHash() != churned.ComputeHash());
+}
+
+// free list는 순서가 의미를 갖는다(LIFO — 다음에 어떤 index가 나오는가).
+// 같은 두 엔티티를 다른 순서로 지운 월드는 다음 할당이 갈라지므로 다른 해시여야 한다.
+TEST_CASE(WorldHash, FreeListOrderChangesHash) {
+    auto makeWorld = [](bool destroyLowFirst) {
+        EF::World world;
+        world.CreateEntity();
+        const EF::EntityId low = world.CreateEntity();
+        const EF::EntityId high = world.CreateEntity();
+        if (destroyLowFirst) {
+            world.DestroyEntity(low);
+            world.DestroyEntity(high);
+        } else {
+            world.DestroyEntity(high);
+            world.DestroyEntity(low);
+        }
+        return world;
+    };
+
+    const EF::World lowFirst = makeWorld(true);
+    const EF::World highFirst = makeWorld(false);
+
+    EXPECT_TRUE(lowFirst.ComputeHash() != highFirst.ComputeHash());
+}
+
+// 같은 할당 이력을 밟은 두 월드는 여전히 같은 해시여야 한다(엔티티 상태를 섞으면서
+// 해시가 결정론을 잃지 않았는지 — 예: 포인터나 용량 같은 비결정 값을 섞는 실수).
+TEST_CASE(WorldHash, SameAllocationHistoryKeepsHashEqual) {
+    auto makeWorld = []() {
+        EF::World world;
+        const EF::EntityId first = world.CreateEntity();
+        const EF::EntityId second = world.CreateEntity();
+        world.DestroyEntity(first);
+        world.CreateEntity();  // free list에서 first의 index를 version 1로 재사용
+        world.AddComponent<AlphaAsServer>(second, AlphaAsServer{ 3 });
+        return world;
+    };
+
+    EXPECT_EQ(makeWorld().ComputeHash(), makeWorld().ComputeHash());
+}

@@ -61,8 +61,8 @@ namespace EF {
     //  - CreateSnapshot / ApplySnapshot은 trivially-copyable 컴포넌트만 다룬다.
     //    ApplySnapshot은 엔티티 할당 상태를 먼저 복원한 뒤 컴포넌트를 채우고,
     //    타입 모양이나 엔티티 index가 어긋나면 아무것도 바꾸지 않고 거부한다.
-    //  - ComputeHash는 trivial 풀의 내용으로 결정론 체크섬을 만든다. 풀 순회 순서는
-    //    TypeInfo::hash 오름차순이라 프로세스가 달라도 같은 내용이면 같은 값이 나온다.
+    //  - ComputeHash는 엔티티 할당 상태와 trivial 풀의 내용으로 결정론 체크섬을 만든다.
+    //    풀 순회 순서는 TypeInfo::hash 오름차순이라 프로세스가 달라도 같은 내용이면 같은 값이 나온다.
     //
     // 이 타입이 하지 않는 일:
     //  - 네트워크를 모른다. 스냅샷을 만들고 적용할 뿐, 보내는 건 NetworkSyncSystem이다.
@@ -326,7 +326,8 @@ namespace EF {
         }
 
         /**
-         * 결정론 검증용 체크섬. trivially-copyable 풀의 (타입, dense index, 바이트)를 FNV-1a로 섞는다.
+         * 결정론 검증용 체크섬. 먼저 `EntityManager` 상태(next index / versions / free list)를,
+         * 이어서 trivially-copyable 풀의 (타입, dense index, 바이트)를 FNV-1a로 섞는다.
          *
          * **풀 순회 순서는 `TypeInfo::hash` 오름차순으로 고정한다.** 이게 이 함수의 유일한
          * 비자명한 부분이라 이유를 남긴다.
@@ -358,11 +359,22 @@ namespace EF {
          *    정렬 전 순서 자체가 프로세스마다 다르기 때문이다. 해시 충돌은 여기서 고칠 수 있는
          *    문제가 아니라 타입 이름 쪽에서 막아야 하는 문제다.
          *
-         * ⚠️ `EntityManager` 상태(version / free list / nextEntityIndex)는 **일부러 섞지 않는다.**
-         * 섞으면 디싱크를 더 빨리 잡을 수 있지만, 지금은 서버가 확정 입력 밖에서 엔티티를
-         * 스폰하는 경로가 남아 있어서(`NetworkSyncSystem`의 Hello 처리 → `world.CreateEntity()`)
-         * 정상 동작하는 세션조차 불일치로 판정된다. 그 경로를 확정 입력으로 옮기는 것이
-         * roadmap의 N2이고, 엔티티 상태를 해시에 넣는 건 그 뒤에 할 일이다.
+         * ### 엔티티 할당 상태도 섞는다 (N4.1)
+         *
+         * 컴포넌트 풀만 보면 놓치는 디싱크가 있다. 한쪽만 엔티티를 하나 만들었다 지웠다면
+         * 풀에는 흔적이 없지만 next index·version·free list가 달라서, **다음 `CreateEntity()`가
+         * 서로 다른 id를 낸다.** 그 순간부터 같은 확정 입력이 다른 엔티티에 붙는다.
+         * free list는 LIFO라 **순서까지** 섞는다 — 같은 두 index를 다른 순서로 회수한 월드는
+         * 다음 할당이 갈라진다. 각 목록 앞에 길이를 섞어 "어디까지가 versions인가"가
+         * 모호하지 않게 한다.
+         *
+         * 예전에는 일부러 섞지 않았다. 서버가 확정 입력 밖(Hello 처리)에서 엔티티를 만들던
+         * 시절이라, 섞으면 정상 세션조차 불일치로 판정됐다. N2가 스폰을 확정 이벤트 경로로
+         * 옮긴 뒤에야 넣을 수 있게 됐다.
+         *
+         * ⚠️ 귀결: **어떤 peer도 월드 엔티티를 확정 경로 밖에서 만들거나 지우면 안 된다.**
+         *    클라 전용 표현용 엔티티(카메라 등)를 이 월드에 만들면 매 tick 불일치 → 무한 resync다.
+         *    표현 컴포넌트는 `RegisterPresentationComponent` 로 뺄 수 있지만 엔티티 할당은 뺄 방법이 없다.
          */
         [[nodiscard]] uint64_t ComputeHash() const {
             uint64_t hash = 14695981039346656037ull;
@@ -375,6 +387,18 @@ namespace EF {
                     mixByte(static_cast<std::byte>((value >> shift) & 0xFF));
                 }
             };
+
+            // 0단계 — 엔티티 할당 상태. 위 함수 주석의 "엔티티 할당 상태도 섞는다" 참조.
+            const EntityStateView entities = m_registry.ViewEntityState();
+            mixUInt64(entities.nextEntityIndex);
+            mixUInt64(static_cast<uint64_t>(entities.versions.size()));
+            for (EntityVersion version : entities.versions) {
+                mixUInt64(version);
+            }
+            mixUInt64(static_cast<uint64_t>(entities.freeIndices.size()));
+            for (EntityIndex freeIndex : entities.freeIndices) {
+                mixUInt64(freeIndex);
+            }
 
             // 1단계 — 섞을 풀을 고른다. 여기서는 순서를 신경 쓰지 않는다.
             std::vector<const IPool*> hashedPools;

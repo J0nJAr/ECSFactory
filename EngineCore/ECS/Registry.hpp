@@ -81,6 +81,12 @@ namespace EF {
             }
         }
 
+        /// @brief 엔티티(EntityManager) 상태를 복사 없이 읽는다. 결정론 해시용.
+        /// 수명 제약(다음 엔티티 생성·파괴까지만 유효)은 `EntityStateView` 주석 참조.
+        [[nodiscard]] EntityStateView ViewEntityState() const noexcept {
+            return m_entityManager.ViewState();
+        }
+
         /// @brief 엔티티(EntityManager) 상태만 스냅샷으로 뜬다. 컴포넌트는 포함하지 않는다.
         [[nodiscard]] EntitySnapshot CreateEntitySnapshot() const {
             return m_entityManager.CreateSnapshot();

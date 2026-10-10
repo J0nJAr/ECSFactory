@@ -359,6 +359,12 @@ protected:
         }
 
         LOG_INFO("루프 종료. 총 {}프레임.", frames);
+        if (m_clientSync) {
+            // 사람 없이 돌린 세션(--frames)에서 resync가 있었는지 로그만으로 판정하기 위한 줄.
+            // 조인할 때 한 번은 정상이다. 2 이상이면 그 세션에 디싱크 → 전체 스냅샷 복구가 있었다.
+            LOG_INFO("세션 요약: 스냅샷 적용 {}회, 마지막 시뮬 tick {}.",
+                     m_clientSync->AppliedSnapshotCount(), m_clientSync->ClientSimTick());
+        }
         renderer.Shutdown();
         window.Destroy();
         return 0;

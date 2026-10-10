@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -43,6 +44,21 @@ namespace EF {
         std::vector<EntityIndex> freeIndices;
     };
 
+    /**
+     * `EntitySnapshot` 과 같은 3필드를 **복사 없이** 읽는 뷰. 결정론 해시(`World::ComputeHash`)용.
+     *
+     * 해시는 매 tick 돈다. `CreateSnapshot()` 은 versions·free list 벡터를 통째로 복사하므로
+     * 엔티티가 수만 개인 공장에서 tick마다 쓰기엔 낭비다. 그래서 읽기 전용 span을 따로 연다.
+     *
+     * ⚠️ 뷰는 다음 `CreateEntity` / `DestroyEntity` / `Clear` / `RestoreFrom` 까지만 유효하다
+     *    (벡터가 재할당되면 span이 허공을 가리킨다). 받아서 바로 쓰고 버린다. 보관하지 말 것.
+     */
+    struct EntityStateView {
+        EntityIndex nextEntityIndex = 0;
+        std::span<const EntityVersion> versions;
+        std::span<const EntityIndex> freeIndices;
+    };
+
     // 엔티티 id의 발급·회수·생존 판정을 맡는다. 컴포넌트는 모른다.
     //
     // id는 index와 version으로 이루어진다. index를 재사용할 때 version을 올려서,
@@ -75,6 +91,15 @@ namespace EF {
 
         /// @brief 현재 상태를 스냅샷으로 뜬다.
         [[nodiscard]] EntitySnapshot CreateSnapshot() const;
+
+        /// @brief 현재 상태를 복사 없이 읽는다. 수명 제약은 `EntityStateView` 주석 참조.
+        [[nodiscard]] EntityStateView ViewState() const noexcept {
+            return EntityStateView{
+                .nextEntityIndex = m_nextEntityIndex,
+                .versions = m_versions,
+                .freeIndices = m_freeIndices
+            };
+        }
 
         /// @brief 스냅샷으로 상태를 통째로 되돌린다.
         ///

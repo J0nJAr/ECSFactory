@@ -401,7 +401,7 @@ World::ApplySnapshot()      → Registry newRegistry;   ← 완전히 새 Regist
 
 #### 남은 것
 
-- **`ComputeHash()`에 `EntityManager` 상태 넣기.** N2가 끝났으므로 이제 넣을 수 있다. 넣으면 엔티티 할당이 갈라지는 것을 바로 잡는다. → 부분 resync의 첫 단계 **N4.1**로 진행한다([partial-resync.md](partial-resync.md)).
+- **`ComputeHash()`에 `EntityManager` 상태 넣기.** N2가 끝났으므로 이제 넣을 수 있다. 넣으면 엔티티 할당이 갈라지는 것을 바로 잡는다. ✅ **N4.1에서 완료**([partial-resync.md](partial-resync.md)).
 - **`Dormant`(파괴 대신 얼리기).** 지금은 나갔다 들어오면 새 `clientId` + 새 캐릭터다. 세션 / 영속 플레이어 / 캐릭터를 분리하는 [§8](deterministic-input-lockstep.md) 작업과 함께 한다.
 
 ---

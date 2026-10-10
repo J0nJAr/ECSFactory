@@ -210,7 +210,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 - 클라이언트는 타입마다 `World::RegisterSnapshotComponent<T>()`로 명시 등록해야 한다(trivially-copyable을 static_assert). `ApplySnapshot`은 레지스트리를 처음부터 재구성하고, `hash`/`size`/`alignment`/`isTrivial`/바이트 수가 안 맞는 타입은 **거부**한다.
 - 스냅샷은 **조인과 resync 전용**이다 — 매 tick 상태 스트리밍이 아니다(아래 lockstep 참조).
 - `ComponentSnapshot.entities`에는 `EntityIndex`만 실리고 **version은 실리지 않는다.** 따라서 컴포넌트가 `EntityId`로 다른 엔티티를 참조하면 왕복에서 살아남지 못한다. 복제되는 링크는 안정적인 도메인 id(현재는 `clientId`)로 걸어야 한다.
-- `World::ComputeHash()`(trivial 풀에 대한 FNV-1a)가 결정론 체크섬이고, `TickHash` 비교 → `ResyncRequest`를 구동한다. 풀 순회는 **`TypeInfo::hash` 오름차순**이다 — 프로세스 로컬인 `index` 순서로 돌면 타입 첫 사용 순서가 다른 두 프로세스가 같은 월드에서 다른 해시를 낸다. `RegisterPresentationComponent<T>()`로 등록된 클라 전용 표현 컴포넌트는 해시에서 빠진다.
+- `World::ComputeHash()`(`EntityManager` 상태 + trivial 풀에 대한 FNV-1a)가 결정론 체크섬이고, `TickHash` 비교 → `ResyncRequest`를 구동한다. 풀 순회는 **`TypeInfo::hash` 오름차순**이다 — 프로세스 로컬인 `index` 순서로 돌면 타입 첫 사용 순서가 다른 두 프로세스가 같은 월드에서 다른 해시를 낸다. `RegisterPresentationComponent<T>()`로 등록된 클라 전용 표현 컴포넌트는 해시에서 빠진다. 엔티티 할당은 뺄 방법이 없으므로 **어떤 peer도 월드 엔티티를 확정 경로 밖에서 만들거나 지우면 안 된다**(N4.1).
 
 ## 결정론 입력 lockstep
 
@@ -275,7 +275,6 @@ tick당 흐름:
 - **마우스 조준은 변환 계층만 있다.** `InputMapping`이 픽셀 → `Fixed64` 경계를 처리하지만 시뮬레이션(`ApplyConfirmedInputs`)이 아직 `aimYaw`/`aimPitch`를 소비하지 않는다. 소비를 시작할 때 서버 쪽 pitch 재클램프가 필요하다.
 - **입력이 시스템 전역 키 상태(`GetAsyncKeyState`)를 읽는다.** 창이 여럿이면 `IWindow::HasFocus()`로 걸러야 한다. 근본 해결은 창 메시지 기반 입력(U6와 함께).
 - **해제는 파괴다.** 나갔다 들어오면 새 `clientId` + 새 캐릭터가 된다. 설계 의도는 `Dormant`(얼리기)이고 세션/영속 플레이어/캐릭터 분리(§8)와 함께 한다.
-- **`ComputeHash()`에 `EntityManager` 상태가 아직 안 들어간다.** N2가 끝났으므로 이제 넣어도 된다 — 넣으면 엔티티 할당이 갈라지는 것을 바로 잡는다.
 - **`ResyncRequest`에 백오프가 없다.** in-flight 하나로 제한해서 폭주는 막혔지만, 복구가 반복 실패하는 상황에서 간격을 늘리지는 않는다.
 - **앱 계층 버전 검사 없음.** `Packet.hpp`의 `kProtocolVersion`은 여전히 아무도 읽지 않는다.
 - `SystemRegistry::SortSystems()`는 TODO. 시스템은 등록 순서대로 실행된다 — 클라이언트는 `LossyLinkPumpSystem → NetworkSyncSystem`, `PlayerVisualSystem → RenderSystem` 순서에 실제로 의존한다.

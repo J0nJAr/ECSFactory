@@ -105,7 +105,7 @@ R2
 | N2 | 스폰·디스폰을 **확정 입력 경로에서만** 일어나게 (SessionEvent) | ✅ |
 | N3 | 클라 예측 / 롤백 — **정말 필요한지부터 재고** (중간 미래) | · |
 | N4 | 대규모 월드 비용 — 영역별 해시, 스냅샷 분할, 관심 영역 (중간 미래) | · |
-| N4.1 | `ComputeHash()`에 `EntityManager` 상태 포함 (부분 resync의 전제) | 진행 중 |
+| N4.1 | `ComputeHash()`에 `EntityManager` 상태 포함 (부분 resync의 전제) | ✅ |
 | N4.2 | 해시 분해표(엔티티·풀별·월드) + 양쪽 tick별 기록 | · |
 | N4.3 | `ResyncRequest`에 분해표, 서버가 어긋난 풀만 `PartialSnapshot`으로 송신 | · |
 | N4.4 | 클라가 서버 tick에서 갈아끼우고 즉시 검증, 실패 시 전체 스냅샷 폴백 | · |

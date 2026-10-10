@@ -261,7 +261,7 @@ EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
 
 | 인자 | 뜻 |
 |---|---|
-| `--frames N` | N프레임만 돌고 스스로 종료 |
+| `--frames N` | N프레임만 돌고 스스로 종료. 종료 때 `세션 요약: 스냅샷 적용 N회` 를 로그에 남긴다 — 조인 1회가 정상이고, 2 이상이면 그 세션에 resync가 있었다 |
 | `--capture x.ppm` | 마지막 프레임 백버퍼를 PPM으로 저장 |
 | `--input-script "20:W,80:"` | **가짜 키보드.** tick 20에 전진, tick 80에 정지 |
 
