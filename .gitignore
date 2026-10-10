@@ -493,3 +493,9 @@ tistory-login.png
 chk-*.png
 skin-*.png
 lab*.png
+
+# 블로그 원고·스킨·전용 도구는 로컬에서만 관리한다.
+/blog/
+/docs/blog/
+/docs/reference/writing-style.md
+/tools/check-writing-style.py

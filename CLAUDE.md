@@ -35,7 +35,7 @@ ECSFactory는 **서버 권위형 멀티플레이 + 결정론적 시뮬레이션*
 
 ### 문서 언어 규칙
 
-소유자는 **한국어 사용자**다. 사람이 읽는 것은 전부 **한국어**로 쓴다: 코드 주석, `README.md`, `docs/design/*`, `docs/blog/*`, 커밋 메시지, 새로 만드는 모든 마크다운. 명시적으로 요청받지 않는 한 이 저장소에 영어 문서를 만들지 않는다.
+소유자는 **한국어 사용자**다. 사람이 읽는 것은 전부 **한국어**로 쓴다: 코드 주석, `README.md`, `docs/design/*`, 커밋 메시지, 새로 만드는 모든 마크다운. 명시적으로 요청받지 않는 한 이 저장소에 영어 문서를 만들지 않는다.
 
 ### 주석 규약
 
@@ -111,12 +111,10 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 
 - **[docs/design/roadmap.md](docs/design/roadmap.md) — 마일스톤 전체 계획.** 지금 무엇을 왜 그 순서로 만드는지가 여기 있다. "다음에 뭘 해야 하나"는 이 문서를 먼저 본다.
 - **[docs/reference/testing-guide.md](docs/reference/testing-guide.md) — 테스트 가이드.** 무엇을 어떻게 확인하는가. 로컬·다중 기기 실행, 결정론 대조, 지연·손실·디싱크 주입, 새 테스트를 쓸 때의 규칙(빨간불 먼저).
-- **[docs/reference/milestone-codes.md](docs/reference/milestone-codes.md) — 마일스톤 기호 사전.** `R2`·`N1`·`U8` 같은 기호가 무엇을 가리키고 지금 어떤 상태인지의 대조표. **이 기호는 저장소 안에서만 쓴다** — 블로그 글(`docs/blog/`)에는 뜻이 드러나는 말로 풀어 쓴다. 독자는 이 저장소를 볼 수 없다.
+- **[docs/reference/milestone-codes.md](docs/reference/milestone-codes.md) — 마일스톤 기호 사전.** `R2`·`N1`·`U8` 같은 기호가 무엇을 가리키고 지금 어떤 상태인지의 대조표. **이 기호는 저장소 안에서만 쓴다.** 외부 설명에는 뜻이 드러나는 말로 풀어 쓴다.
 - `docs/design/*.md` — 다음 에이전트·개발자를 대상으로 한 **핸드오프 스펙**: 근거, 불변식, 마일스톤 상태, 함정. 입력·동기화를 건드리기 전에 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)를, 렌더링을 건드리기 전에 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)를, UI를 건드리기 전에 [docs/design/ui-layer.md](docs/design/ui-layer.md)를 읽는다. 뒤의 둘은 **설계 대비 구현이 앞부분만 들어와 있다** — 렌더링은 R0~R6(창·device·카메라·ECS 연결·실제 입력), UI는 U3(앵커 레이아웃)까지다. 나머지는 아직 문서뿐이므로, 각 문서의 마일스톤 표에서 지금 어디까지 왔는지를 먼저 확인할 것.
-- `docs/blog/*.md` — 각 계층을 만든 순서대로 쓴 서술형 기록(05 패킷 → 06 동기화 상태머신 → 07 신뢰성 UDP → 08 lockstep → 09 결정론 스폰 → 10 렌더 타깃 분리·창 → 11 DX11 첫 픽셀 → 12 화면에서 결정론을 본다).
-  - ⚠️ **`docs/blog/`에 있다고 발행된 것은 아니다.** 티스토리 발행은 붙여넣기 수동 작업이라 저장소가 앞서간다. 2026-08-23 기준 발행분은 **9편까지**(`machamy.tistory.com/36`)이고 그 뒤에 복습편 두 개(`/37` 1~4편, `/38` 5~9편)가 있다. **10~12편은 미발행.**
-  - 이 숫자는 저장소가 알 수 없으므로 금방 낡는다. 확실하지 않으면 **소유자에게 묻거나 블로그를 직접 확인**할 것. 카테고리 페이지는 목록이 잘려 보일 수 있으니 최신 글 목록(블로그 첫 페이지)을 본다.
-  - 블로그 글을 쓰거나 고칠 때는 [docs/reference/writing-style.md](docs/reference/writing-style.md)의 문체 기준을 따르고 `python tools/check-writing-style.py --all-blog`로 검사한다. 설계 문서와 코드 주석은 이 기준의 대상이 아니다.
+- 블로그 원고(`docs/blog/`), 스킨(`blog/`), 전용 문체 기준·검사 도구는 로컬 파일이며 `.gitignore`로 제외한다. 엔진 작업에 함께 커밋하지 않는다.
+  - 티스토리(`machamy.tistory.com`) 발행 현황은 로컬 `docs/blog/README.md`에 적는다. 발행은 붙여넣기 수동 작업이라 로컬 원고와 발행본이 어긋날 수 있다. 확실하지 않으면 `https://machamy.tistory.com/rss`로 확인한다.
 
 `README.md`의 "작업 스케치" 섹션이 살아 있는 TODO 목록이다.
 
@@ -320,4 +318,3 @@ tick당 흐름:
 ## 사용할 수 있는 스킬
 
 - `explain-diff-html` — 현재 diff / 브랜치 / PR을 배경·직관·코드 워크스루·퀴즈 5문항으로 설명하는 자체완결형 HTML을 만든다. 출력은 `~/Documents/explanations/YYYY-MM-DD-explanation-<slug>.html`(저장소 밖). 학습용 프로젝트이므로 큰 변경을 끝낸 뒤 이걸로 복습 자료를 만들면 좋다.
-- `blog-post` — 개발 기록을 "[C++ ECS 게임 만들기]" 시리즈의 다음 편으로 쓴다. 정본은 `docs/blog/NN_slug.md`, 티스토리 붙여넣기용은 `.claude/tmp/blog-NN-tistory.md`. 설계 문서와 목적이 다르다 — 설계 문서는 다음 사람이 이어서 구현하기 위한 스펙이고, 블로그는 만든 순서대로 읽는 서술형 기록이다. **코드를 직접 읽어 사실 확인을 하고**, [writing-style.md](docs/reference/writing-style.md) 기준을 `tools/check-writing-style.py`로 검사한 뒤 커밋한다.
