@@ -1,7 +1,7 @@
 # 부분 resync — 바뀐 풀만 보내고, 안 되면 전체 스냅샷
 
 > 대상 독자: 이 작업을 **이어서 구현할 에이전트/개발자**.
-> 상태: **설계 확정. N4.1·N4.2 완료, N4.3 다음.** 마일스톤 표는 아래 §7.
+> 상태: **설계 확정. N4.1~N4.3 완료, N4.4(동기화 시스템 연결) 다음.** 마일스톤 표는 아래 §7.
 > 관련 문서: [deterministic-input-lockstep.md](deterministic-input-lockstep.md)(lockstep 전체),
 > [network-sync-system.md](network-sync-system.md)("delta snapshot은 별도 과제"로 남겨 둔 자리),
 > [roadmap.md §9](roadmap.md) 의 N4(대규모 월드 비용).
@@ -154,5 +154,11 @@ resync 요청이 서버에 닿을 때 서버는 tick `S`를 처리 중이고, �
 |---|---|---|
 | N4.1 | `ComputeHash()`에 `EntityManager` 상태를 넣는다 | ✅ |
 | N4.2 | 해시 분해표(엔티티·풀별·월드) + 양쪽 tick별 기록. 월드 해시를 분해표에서 유도 | ✅ |
-| N4.3 | `ResyncRequest`에 분해표, 서버가 다른 풀을 골라 `PartialSnapshot` 송신. `kReliabilityVersion` 3 | · |
-| N4.4 | 클라가 `X`에서 갈아끼우고 즉시 검증, 실패 시 전체 폴백. 주입 테스트 둘 | · |
+| N4.3 | 데이터 계층: `ResyncRequest`에 분해표, `PartialSnapshot` 와이어 포맷, `World::CreatePartialSnapshot`·`ApplyPartialSnapshot`(전부 아니면 전무), `SelectPoolsForPartialResync`. `kReliabilityVersion` 3. **서버 응답은 아직 전체 스냅샷** | ✅ |
+| N4.4 | 동기화 시스템 연결: 서버가 부분 응답, 클라가 `X`에서 갈아끼우고 즉시 검증, 실패 시 전체 폴백. 주입 테스트 둘 | · |
+
+> **N4.3/N4.4 경계를 처음 계획에서 옮긴 이유.** 처음엔 N4.3에서 서버의 부분 응답까지 켜려 했다.
+> 그러면 클라가 아직 `PartialSnapshot`을 모르는 중간 커밋에서, 클라가 그 패킷을 버리고
+> resync in-flight 플래그가 영영 내려가지 않아 **복구가 멈춘다.** 기존 복구 테스트가 그 커밋에서
+> 깨진다. 그래서 N4.3은 "부품"(데이터 계층)만 만들고, 서버 응답과 클라 적용은 N4.4에서 한꺼번에 켠다.
+> 커밋마다 전체 테스트가 초록으로 남는다.

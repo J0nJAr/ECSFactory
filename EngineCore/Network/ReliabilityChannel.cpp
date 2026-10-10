@@ -16,7 +16,10 @@ namespace EF::Network {
         //
         // 제대로 된 자리는 Hello/Welcome handshake에서 앱 버전을 비교하는 것이다.
         // 그게 생기면 이 상수는 진짜 전송 포맷 변경에만 쓰면 된다.
-        constexpr uint8_t kReliabilityVersion = 2;
+        //
+        // 3으로 올린 이유: ResyncRequest 페이로드에 해시 분해표가 붙고 PartialSnapshot 패킷이
+        // 생겼다(부분 resync, N4.3). 2로 올릴 때와 같은 이유로 여기서 막는다.
+        constexpr uint8_t kReliabilityVersion = 3;
 
         // 신뢰 채널 조각 하나에 담는 레코드 바이트 수. MTU 아래로 유지한다.
         constexpr std::size_t kFragmentSize = 1024;

@@ -107,6 +107,18 @@ namespace EF {
             m_entityManager.Clear();
         }
 
+        /// @brief TypeHash로 풀을 찾아 비운다(풀 자체는 남긴다). 없으면 아무 일도 하지 않는다.
+        /// 부분 스냅샷 적용(`World::ApplyPartialSnapshot`)이 풀을 통째로 갈아끼울 때 쓴다.
+        /// 와이어에서 온 것은 프로세스 로컬 index가 아니라 hash이므로 hash로 찾는다.
+        void ClearPool(TypeHash hash) {
+            for (auto& pool : m_pools) {
+                if (pool && pool->GetType().hash == hash) {
+                    pool->Clear();
+                    return;
+                }
+            }
+        }
+
         [[nodiscard]] EntityId ResolveEntityId(EntityIndex index) const {
             return m_entityManager.ResolveEntityId(index);
         }

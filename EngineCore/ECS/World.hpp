@@ -51,6 +51,28 @@ namespace EF {
         std::vector<ComponentSnapshot> components;
     };
 
+    /**
+     * 월드의 **일부 풀만** 담은 스냅샷. 부분 resync용(docs/design/partial-resync.md).
+     *
+     * 전체 스냅샷과 달리 엔티티 상태를 싣지 않는다 — 대신 받는 쪽의 엔티티 상태가 이미
+     * 같다는 것을 `entityHash` 로 확인한다. 엔티티 할당이 갈라졌다면 풀 몇 개를 갈아끼워서는
+     * 고칠 수 없으므로 그때는 전체 스냅샷으로 간다(폴백).
+     *
+     * - `tick` — 이 풀들이 어느 시점의 값인가. 전체 스냅샷과 같은 라벨 계약
+     *   (`SimulatedThroughTick`)을 따른다. 받는 쪽은 **자기 시뮬레이션이 이 tick에 도달했을 때만**
+     *   갈아끼워야 한다 — 다른 tick의 풀과 섞으면 서로 다른 시점의 상태가 한 월드에 공존한다.
+     * - `entityHash` / `worldHash` — 보내는 쪽의 그 tick 시점 값. 받는 쪽은 적용 전에
+     *   `entityHash` 를, 적용 직후 `worldHash` 를 비교해 부분 복구가 충분했는지 즉시 판정한다.
+     *   (어긋남은 번진다: 서버가 고른 풀만으로는 부족할 수 있다.)
+     * - `components` — 갈아끼울 풀들. 엔티티가 0개인 풀도 실린다("그 풀을 비워라").
+     */
+    struct PartialSnapshot {
+        uint64_t tick = 0;
+        uint64_t entityHash = 0;
+        uint64_t worldHash = 0;
+        std::vector<ComponentSnapshot> components;
+    };
+
     /// 풀 하나의 결정론 해시. 부분 resync가 "어느 풀이 어긋났나"를 판정하는 단위다.
     struct PoolHash {
         TypeHash type = 0;
@@ -115,11 +137,44 @@ namespace EF {
         Registry m_registry;
         SystemRegistry m_systems;
         std::unordered_map<TypeHash, std::unique_ptr<void, void(*)(void*)>> m_resources;
-        std::unordered_map<TypeHash, std::function<bool(Registry&, const ComponentSnapshot&)>> m_snapshotAppliers;
+        /**
+         * 스냅샷 컴포넌트 타입 하나를 다루는 한 쌍의 함수. `RegisterSnapshotComponent<T>` 가 만든다.
+         *
+         * 검사와 적용을 나눈 이유: 부분 스냅샷 적용(`ApplyPartialSnapshot`)은 **전부 아니면 전무**
+         * 여야 한다. 풀 셋 중 두 번째에서 모양이 안 맞는다고 첫 번째만 바뀐 채 남으면, 그 월드는
+         * 서버의 어느 시점과도 같지 않은 상태가 된다. 그래서 모든 풀을 먼저 검사하고, 전부
+         * 통과했을 때만 적용한다. 예전에는 한 함수가 검사 후 바로 적용했다.
+         */
+        struct SnapshotApplier {
+            // 타입 모양(hash/size/alignment/trivial)과 바이트 수가 이 타입과 맞는가. 부작용 없음.
+            std::function<bool(const ComponentSnapshot&)> check;
+            // 검사를 통과한 스냅샷을 registry에 채운다. 엔티티 생존 검사는 호출자의 몫이다.
+            std::function<void(Registry&, const ComponentSnapshot&)> apply;
+        };
+        std::unordered_map<TypeHash, SnapshotApplier> m_snapshotAppliers;
 
         // ComputeHash에서 제외할 타입들(클라이언트 전용 표현 컴포넌트).
         // RegisterPresentationComponent 주석 참조.
         std::unordered_set<TypeHash> m_presentationTypes;
+
+        // 풀 하나의 현재 내용을 와이어용 ComponentSnapshot으로 복사한다.
+        [[nodiscard]] static ComponentSnapshot MakeComponentSnapshot(const IPool& pool) {
+            const TypeInfo& type = pool.GetType();
+            ComponentSnapshot componentSnapshot;
+            componentSnapshot.type = ComponentTypeDescriptor{
+                .hash = type.hash,
+                .size = type.size,
+                .alignment = type.alignment,
+                .isTrivial = type.isTrivial
+            };
+
+            const auto entities = pool.GetDenseEntities();
+            componentSnapshot.entities.assign(entities.begin(), entities.end());
+
+            const auto bytes = pool.GetRawBytes();
+            componentSnapshot.bytes.assign(bytes.begin(), bytes.end());
+            return componentSnapshot;
+        }
 
     public:
         EntityId CreateEntity() {
@@ -234,26 +289,24 @@ namespace EF {
             static_assert(std::is_trivially_copyable_v<T>, "Snapshot components must be trivially copyable.");
 
             const TypeInfo& type = GetTypeInfo<T>();
-            m_snapshotAppliers[type.hash] = [](Registry& registry, const ComponentSnapshot& snapshot) {
-                const TypeInfo& localType = GetTypeInfo<T>();
-                if (snapshot.type.hash != localType.hash ||
-                    snapshot.type.size != localType.size ||
-                    snapshot.type.alignment != localType.alignment ||
-                    !snapshot.type.isTrivial) {
-                    return false;
+            m_snapshotAppliers[type.hash] = SnapshotApplier{
+                .check = [](const ComponentSnapshot& snapshot) {
+                    const TypeInfo& localType = GetTypeInfo<T>();
+                    if (snapshot.type.hash != localType.hash ||
+                        snapshot.type.size != localType.size ||
+                        snapshot.type.alignment != localType.alignment ||
+                        !snapshot.type.isTrivial) {
+                        return false;
+                    }
+                    return snapshot.bytes.size() == snapshot.entities.size() * sizeof(T);
+                },
+                .apply = [](Registry& registry, const ComponentSnapshot& snapshot) {
+                    const std::byte* cursor = snapshot.bytes.data();
+                    for (EntityIndex entityIndex : snapshot.entities) {
+                        registry.AddComponentRaw<T>(entityIndex, cursor);
+                        cursor += sizeof(T);
+                    }
                 }
-
-                const std::size_t expectedBytes = snapshot.entities.size() * sizeof(T);
-                if (snapshot.bytes.size() != expectedBytes) {
-                    return false;
-                }
-
-                const std::byte* cursor = snapshot.bytes.data();
-                for (EntityIndex entityIndex : snapshot.entities) {
-                    registry.AddComponentRaw<T>(entityIndex, cursor);
-                    cursor += sizeof(T);
-                }
-                return true;
             };
         }
 
@@ -291,24 +344,90 @@ namespace EF {
                     continue;
                 }
 
-                ComponentSnapshot componentSnapshot;
-                componentSnapshot.type = ComponentTypeDescriptor{
-                    .hash = type.hash,
-                    .size = type.size,
-                    .alignment = type.alignment,
-                    .isTrivial = type.isTrivial
-                };
-
-                const auto entities = pool->GetDenseEntities();
-                componentSnapshot.entities.assign(entities.begin(), entities.end());
-
-                const auto bytes = pool->GetRawBytes();
-                componentSnapshot.bytes.assign(bytes.begin(), bytes.end());
-
-                snapshot.components.push_back(std::move(componentSnapshot));
+                snapshot.components.push_back(MakeComponentSnapshot(*pool));
             }
 
             return snapshot;
+        }
+
+        /**
+         * 지정한 타입의 풀만 담은 부분 스냅샷을 만든다. 부분 resync의 서버 쪽.
+         *
+         * `types` 는 보통 `SelectPoolsForPartialResync` 가 고른 목록이다. 이 월드에 그 타입의
+         * 풀이 아예 없으면 엔티티 0개짜리 풀을 싣지 **않고** 건너뛴다 — 타입 모양(size 등)을
+         * 알 방법이 없기 때문이다. 그런 경우는 "풀 집합이 다름"이라 선택 단계에서 이미 전체
+         * 스냅샷으로 걸러진다.
+         */
+        [[nodiscard]] PartialSnapshot CreatePartialSnapshot(uint64_t tick, const std::vector<TypeHash>& types) const {
+            const WorldHashBreakdown breakdown = ComputeHashBreakdown();
+
+            PartialSnapshot snapshot;
+            snapshot.tick = tick;
+            snapshot.entityHash = breakdown.entityHash;
+            snapshot.worldHash = breakdown.worldHash;
+
+            for (TypeHash wanted : types) {
+                for (const auto& pool : m_registry.GetPools()) {
+                    if (pool && pool->GetType().isTrivial && pool->GetType().hash == wanted) {
+                        snapshot.components.push_back(MakeComponentSnapshot(*pool));
+                        break;
+                    }
+                }
+            }
+            return snapshot;
+        }
+
+        /**
+         * 부분 스냅샷의 풀들로 해당 풀을 **통째로 갈아끼운다.** 전부 아니면 전무다.
+         *
+         * 거부(false, 월드는 그대로)하는 경우:
+         *  - 이 월드의 `entityHash` 가 스냅샷의 것과 다르다 — 엔티티 할당이 갈라졌으면 풀만
+         *    바꿔서는 못 고친다. 호출자는 전체 스냅샷으로 폴백해야 한다.
+         *  - 이 클라가 등록하지 않은 타입이 있다 — 전체 스냅샷에서는 미등록 타입을 "무시"하지만
+         *    여기서는 거부한다. 서버가 그 풀이 어긋났다고 판정해서 보낸 것이므로, 무시하면
+         *    고쳐지지 않은 채 "복구했다"고 착각하게 된다.
+         *  - 타입 모양이나 바이트 수가 안 맞는다, 또는 죽은 엔티티 index에 컴포넌트가 붙어 있다.
+         *
+         * ⚠️ 이 함수는 tick을 모른다. **"내 시뮬레이션이 `snapshot.tick` 에 도달했는가"는
+         *    호출자(NetworkSyncSystem)가 지켜야 한다.** 그리고 적용 후 `worldHash` 비교도
+         *    호출자가 한다 — 여기서 true는 "갈아끼웠다"이지 "이제 서버와 같다"가 아니다.
+         */
+        [[nodiscard]] bool ApplyPartialSnapshot(const PartialSnapshot& snapshot) {
+            if (ComputeHashBreakdown().entityHash != snapshot.entityHash) {
+                return false;
+            }
+
+            // 살아 있는 index 판정용 비트맵(ApplySnapshot과 같은 방식).
+            const EntityStateView entities = m_registry.ViewEntityState();
+            std::vector<bool> isAlive(entities.versions.size(), true);
+            for (EntityIndex freeIndex : entities.freeIndices) {
+                isAlive[freeIndex] = false;
+            }
+
+            // 1단계 — 전부 검사한다. 여기서는 아무것도 바꾸지 않는다.
+            std::vector<const SnapshotApplier*> appliers;
+            appliers.reserve(snapshot.components.size());
+            for (const ComponentSnapshot& component : snapshot.components) {
+                for (EntityIndex entityIndex : component.entities) {
+                    if (static_cast<std::size_t>(entityIndex) >= isAlive.size() || !isAlive[entityIndex]) {
+                        return false;
+                    }
+                }
+
+                auto applierIt = m_snapshotAppliers.find(component.type.hash);
+                if (applierIt == m_snapshotAppliers.end() || !applierIt->second.check(component)) {
+                    return false;
+                }
+                appliers.push_back(&applierIt->second);
+            }
+
+            // 2단계 — 전부 통과했을 때만 갈아끼운다. 풀을 비우고 스냅샷 내용으로 다시 채운다.
+            // 살아 있는 index만 가리키므로 AddComponentRaw가 엔티티를 새로 만들 일은 없다.
+            for (std::size_t i = 0; i < snapshot.components.size(); ++i) {
+                m_registry.ClearPool(snapshot.components[i].type.hash);
+                appliers[i]->apply(m_registry, snapshot.components[i]);
+            }
+            return true;
         }
 
         /**
@@ -358,9 +477,12 @@ namespace EF {
                     continue;
                 }
 
-                if (!applierIt->second(newRegistry, componentSnapshot)) {
+                // newRegistry는 실패하면 버려지는 임시본이라, 여기서는 검사 직후 바로 채워도
+                // 원래 월드가 반쯤 바뀌는 일이 없다.
+                if (!applierIt->second.check(componentSnapshot)) {
                     return false;
                 }
+                applierIt->second.apply(newRegistry, componentSnapshot);
             }
 
             m_registry = std::move(newRegistry);

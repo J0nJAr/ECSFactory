@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "ECS/ISystem.hpp"
@@ -15,6 +16,25 @@ namespace EF {
         Client,
         Server
     };
+
+    /**
+     * 부분 resync로 고칠 수 있는지 판정하고, 고칠 수 있으면 보낼 풀 목록을 돌려준다.
+     * nullopt면 **전체 스냅샷으로 가야 한다.** 서버 쪽 판단이다(docs/design/partial-resync.md §4.4).
+     *
+     * @param client  클라가 불일치를 본 tick T의 분해표(ResyncRequest에 실려 온 것)
+     * @param server  서버가 기록해 둔 tick T의 분해표. 기록 창 밖이면 nullptr.
+     *
+     * 전체로 가는 경우:
+     *  - `server == nullptr` — 비교할 근거가 없다.
+     *  - `entityHash` 가 다르다 — 엔티티 할당이 갈라지면 풀만 바꿔서는 못 고친다.
+     *  - 풀 집합(타입 목록)이 다르다 — 한쪽에만 있는 풀은 "갈아끼우기"로 표현할 수 없다.
+     *  - 다른 풀이 하나도 없다 — 분해표는 같은데 월드 해시만 다른, 있어서는 안 되는 상태다.
+     *    무엇이 틀렸는지 모르므로 전부 보낸다.
+     *
+     * 순수 함수다. 네트워크도 월드도 모른다 — 그래서 단위 테스트로 판정 규칙을 고정할 수 있다.
+     */
+    [[nodiscard]] std::optional<std::vector<TypeHash>> SelectPoolsForPartialResync(
+        const WorldHashBreakdown& client, const WorldHashBreakdown* server);
 
     // 동기화 상태 머신. 클라이언트와 서버 두 역할을 한 타입이 겸한다(NetworkSyncMode).
     //

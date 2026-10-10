@@ -19,6 +19,22 @@
 
 namespace EF {
 
+    /**
+     * 클라가 디싱크를 보고 서버에 보내는 복구 요청.
+     *
+     * `localBreakdown` 은 클라가 **불일치를 본 그 tick(`tick`)** 의 해시 분해표다. 서버는 자기가
+     * 기록해 둔 같은 tick의 분해표와 풀 단위로 비교해, 어긋난 풀만 보낼지(부분 resync) 전체
+     * 스냅샷을 보낼지 정한다(`SelectPoolsForPartialResync`).
+     *
+     * `localHash` 는 `localBreakdown.worldHash` 와 같다. 와이어에 따로 싣지 않는다 — 두 값이
+     * 어긋난 요청을 검증해야 하는 부담만 생기기 때문이다.
+     */
+    struct ResyncRequest {
+        uint64_t tick = 0;
+        uint64_t remoteHash = 0;               // 클라가 받은 서버 TickHash 값(진단용)
+        WorldHashBreakdown localBreakdown;     // tick 시점 클라의 분해표
+    };
+
     struct NetworkClientState {
         uint32_t clientId = 0;
         EntityId controlledEntity = kNullEntity;
@@ -169,8 +185,8 @@ namespace EF {
         bool SendInputCommand(const InputCommand& command, const Network::Endpoint& target = {});
         bool SendInputFrame(const InputFrame& frame, const Network::Endpoint& target = {});
         bool SendTickHash(const TickHash& tickHash, const Network::Endpoint& target = {});
-        bool SendResyncRequest(uint64_t tick, uint64_t localHash, uint64_t remoteHash,
-                               const Network::Endpoint& target = {});
+        bool SendResyncRequest(const ResyncRequest& request, const Network::Endpoint& target = {});
+        bool SendPartialSnapshot(const PartialSnapshot& snapshot, const Network::Endpoint& target = {});
 
         // 매 fixed tick 호출: 재전송/누적 ack를 흘려보낸다.
         void Update(uint64_t tick);
@@ -202,11 +218,11 @@ namespace EF {
 
         static std::vector<uint8_t> EncodeTickHash(const TickHash& tickHash);
         static bool DecodeTickHash(const std::vector<uint8_t>& payload, TickHash& outTickHash);
-        static bool DecodeResyncRequest(
-            const std::vector<uint8_t>& payload,
-            uint64_t& outTick,
-            uint64_t& outLocalHash,
-            uint64_t& outRemoteHash);
+        static std::vector<uint8_t> EncodeResyncRequest(const ResyncRequest& request);
+        static bool DecodeResyncRequest(const std::vector<uint8_t>& payload, ResyncRequest& outRequest);
+
+        static std::vector<uint8_t> EncodePartialSnapshot(const PartialSnapshot& snapshot);
+        static bool DecodePartialSnapshot(const std::vector<uint8_t>& payload, PartialSnapshot& outSnapshot);
 
     private:
         static Network::ReliabilityChannel::Delivery DeliveryClassFor(Network::PacketType type);

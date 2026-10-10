@@ -26,6 +26,30 @@ namespace EF {
 
     }
 
+    std::optional<std::vector<TypeHash>> SelectPoolsForPartialResync(
+        const WorldHashBreakdown& client, const WorldHashBreakdown* server) {
+        if (server == nullptr || client.entityHash != server->entityHash ||
+            client.pools.size() != server->pools.size()) {
+            return std::nullopt;
+        }
+
+        // 두 목록 모두 TypeHash 오름차순이므로(WorldHashBreakdown 불변식) 같은 자리끼리 비교한다.
+        std::vector<TypeHash> differing;
+        for (std::size_t i = 0; i < client.pools.size(); ++i) {
+            if (client.pools[i].type != server->pools[i].type) {
+                return std::nullopt;  // 풀 집합이 다르다
+            }
+            if (client.pools[i].hash != server->pools[i].hash) {
+                differing.push_back(client.pools[i].type);
+            }
+        }
+
+        if (differing.empty()) {
+            return std::nullopt;
+        }
+        return differing;
+    }
+
     NetworkSyncSystem::NetworkSyncSystem(NetworkSyncMode mode)
         : m_mode(mode) {
     }
@@ -348,7 +372,13 @@ namespace EF {
                     //    false를 보고 다시 보내면 요청이 중복 적재되고, 링크가 회복되는 순간
                     //    그게 한꺼번에 나가 서버가 스냅샷을 그 수만큼 답한다 — 막으려던
                     //    폭주가 오히려 링크가 나쁠 때 터진다.
-                    network.SendResyncRequest(tick, localHash, remoteHash);
+                    // 그 tick의 분해표를 함께 싣는다. 서버가 풀 단위로 비교해 부분 resync를
+                    // 할지 정한다(N4.3 — 서버는 아직 전체 스냅샷으로만 답한다. N4.4에서 연결).
+                    network.SendResyncRequest(ResyncRequest{
+                        .tick = tick,
+                        .remoteHash = remoteHash,
+                        .localBreakdown = localIt->second
+                    });
                     m_resyncRequestInFlight = true;
                 }
             }
@@ -499,13 +529,13 @@ namespace EF {
         }
 
         case Network::PacketType::ResyncRequest: {
-            uint64_t resyncTick = 0;
-            uint64_t localHash = 0;
-            uint64_t remoteHash = 0;
-            if (NetworkManager::DecodeResyncRequest(packet.payload, resyncTick, localHash, remoteHash)) {
-                static_cast<void>(resyncTick);
-                static_cast<void>(localHash);
-                static_cast<void>(remoteHash);
+            ResyncRequest request;
+            if (NetworkManager::DecodeResyncRequest(packet.payload, request)) {
+                // N4.3: 요청은 분해표를 싣고 오지만 아직 전체 스냅샷으로만 답한다.
+                // 부분 응답(SelectPoolsForPartialResync → PartialSnapshot)은 클라가 그것을
+                // 받아 적용할 수 있게 되는 N4.4에서 함께 연결한다 — 한쪽만 먼저 켜면
+                // 클라가 모르는 패킷을 버리고 resync in-flight 플래그가 영영 안 내려가
+                // 복구가 멈춘다.
                 network.SendWorldSnapshot(world.CreateSnapshot(SimulatedThroughTick(tick)), from);
             }
             break;

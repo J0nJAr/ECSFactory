@@ -926,7 +926,11 @@ TEST_CASE(Network, ResyncRequestCanTriggerSnapshotReapply) {
     const uint64_t clientHash = clientWorld.ComputeHash();
     EXPECT_FALSE(serverHash == clientHash);
 
-    EXPECT_TRUE(clientNetwork.SendResyncRequest(50, clientHash, serverHash));
+    EXPECT_TRUE(clientNetwork.SendResyncRequest(EF::ResyncRequest{
+        .tick = 50,
+        .remoteHash = serverHash,
+        .localBreakdown = clientWorld.ComputeHashBreakdown()
+    }));
     auto resyncPacket = serverNetwork.TryReceivePacket();
     EXPECT_TRUE(resyncPacket.has_value());
     EXPECT_EQ(static_cast<int>(resyncPacket->type), static_cast<int>(EF::Network::PacketType::ResyncRequest));

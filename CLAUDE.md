@@ -187,7 +187,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 
 ### 3. 프로토콜 — `NetworkManager`
 
-월드 리소스([NetworkManager.hpp](EngineCore/Network/NetworkManager.hpp))로, 연결 하나와 endpoint↔clientId 테이블, endpoint별 `ReliabilityChannel`을 소유한다. 패킷 타입([Packet.hpp](EngineCore/Network/Packet.hpp)): `Hello`, `TypeTable`, `WorldSnapshotRequest`, `WorldSnapshot`, `InputCommand`, `TickHash`, `ResyncRequest`, `Welcome`, `InputFrame`. 모든 타입에 static `Encode*`/`Decode*`가 있다(`NetUtils.hpp`의 `PacketWriter`/`PacketReader`로 네트워크 바이트 오더 직렬화. `Fixed64`는 `Raw()`로 나간다).
+월드 리소스([NetworkManager.hpp](EngineCore/Network/NetworkManager.hpp))로, 연결 하나와 endpoint↔clientId 테이블, endpoint별 `ReliabilityChannel`을 소유한다. 패킷 타입([Packet.hpp](EngineCore/Network/Packet.hpp)): `Hello`, `TypeTable`, `WorldSnapshotRequest`, `WorldSnapshot`, `InputCommand`, `TickHash`, `ResyncRequest`, `Welcome`, `InputFrame`, `PartialSnapshot`. 모든 타입에 static `Encode*`/`Decode*`가 있다(`NetUtils.hpp`의 `PacketWriter`/`PacketReader`로 네트워크 바이트 오더 직렬화. `Fixed64`는 `Raw()`로 나간다).
 
 > ⚠️ **와이어 버전에 관한 정확한 사실** (예전 문서에 틀린 내용이 있었다):
 > - 매직 넘버 `EFSY`는 **코드에 존재하지 않는다.** 설계 초안에만 있던 것이다.
@@ -265,7 +265,7 @@ tick당 흐름:
 - 📌 **클라 전용 표현 컴포넌트는 `RegisterPresentationComponent<T>()`로 해시에서 뺀다.** 서버엔 그 풀이 없어서, 빼지 않으면 매 tick 불일치 → 무한 resync가 된다. 기본값은 "해시에 포함"이다(깜빡 잊으면 시끄럽게 실패하는 쪽).
 - 📌 **`View::ForEach`는 `EntityId`가 아니라 `EntityIndex`를 준다.** `EntityId`로 받아도 암묵 변환으로 컴파일되지만 version이 0인 가짜 id가 된다. id가 필요하면 range-for를 쓴다.
 - 📌 **클라 생존 판정은 전송 계층(`PumpConnection`)에서, 등록 시점에 반드시 현재 tick을 찍는다.** 조용한 클라는 ack만 보내는데 ack만 든 데이터그램은 `TryReceive`로 올라오지 않는다. 그리고 등록 시 0으로 두면 오래 떠 있던 서버가 신규 접속을 즉시 쫓아낸다(`Network.ClientCanJoinLongRunningServer`). 타임아웃은 250 tick(5초).
-- 📌 **`kReliabilityVersion`은 2다.** `InputFrame`에 세션 이벤트가 붙어 앱 레코드 배치가 바뀌었다. 층 구분상 앱 계층 버전(Hello/Welcome)이 맞는 자리지만 그게 없어서 여기서 막는다.
+- 📌 **`kReliabilityVersion`은 3이다.** 2: `InputFrame`에 세션 이벤트가 붙어 앱 레코드 배치가 바뀌었다. 3: `ResyncRequest`에 해시 분해표, `PartialSnapshot` 패킷 추가(부분 resync). 층 구분상 앱 계층 버전(Hello/Welcome)이 맞는 자리지만 그게 없어서 여기서 막는다.
 
 아직 **미완성 / 스텁**인 것:
 
