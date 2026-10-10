@@ -277,12 +277,15 @@ namespace EF {
     }
 
     void NetworkSyncSystem::ApplyBufferedInputFrames(World& world, NetworkManager& network) {
-        static_cast<void>(network);
         if (!m_hasSnapshot) {
             return;
         }
 
         for (;;) {
+            // 부분 스냅샷이 "지금 tick"의 것이면 다음 프레임을 적용하기 **전에** 끼운다.
+            // 다음 프레임까지 적용해 버리면 X를 지나쳐서 끼울 기회를 잃는다.
+            TryApplyPendingPartialSnapshot(world, network);
+
             const uint64_t nextTick = m_clientSimTick + 1;
             auto frameIt = m_frameBuffer.find(nextTick);
             if (frameIt == m_frameBuffer.end()) {
@@ -308,6 +311,46 @@ namespace EF {
             // 계산하면 어느 tick의 상태인지 알 수 없게 된다.
             RecordHash(world, m_clientSimTick);
         }
+    }
+
+    void NetworkSyncSystem::TryApplyPendingPartialSnapshot(World& world, NetworkManager& network) {
+        if (!m_pendingPartialSnapshot || m_pendingPartialSnapshot->tick != m_clientSimTick) {
+            return;
+        }
+
+        const PartialSnapshot partial = std::move(*m_pendingPartialSnapshot);
+        m_pendingPartialSnapshot.reset();
+
+        // 갈아끼운 **직후** 서버의 X 시점 월드 해시와 비교한다. 다음 TickHash를 기다리지 않는다.
+        // 어긋남은 번진다 — T에서 X까지 망가진 풀로 시뮬레이션하는 동안 다른 풀까지 망가졌을
+        // 수 있고, 서버가 T 기준으로 고른 풀만으로는 부족할 수 있다(partial-resync.md §4.4).
+        //
+        // ⚠️ ApplyPartialSnapshot이 false면 월드는 그대로다(전부 아니면 전무). 하지만 true인데
+        //    해시가 안 맞으면 풀은 이미 바뀐 상태다. 그래도 괜찮다 — 곧 전체 스냅샷이 월드를
+        //    통째로 덮는다. 그때까지 HasHashMismatch()는 계속 켜져 있다.
+        if (!world.ApplyPartialSnapshot(partial) || world.ComputeHash() != partial.worldHash) {
+            FallBackToFullSnapshot(network);
+            return;
+        }
+
+        ++m_appliedPartialSnapshotCount;
+        m_hasHashMismatch = false;
+        m_resyncRequestInFlight = false;
+
+        // 이 tick의 기록을 고친 월드로 다시 쓰고, 그보다 오래된 기록은 버린다 — 망가진 풀로
+        // 시뮬레이션한 결과라 늦게 도착한 TickHash와 비교하면 허위 불일치가 난다. 기록이 없는
+        // tick의 TickHash는 VerifyPendingTickHashes가 "근거 없음"으로 조용히 버린다.
+        m_hashByTick.erase(m_hashByTick.begin(), m_hashByTick.lower_bound(m_clientSimTick));
+        RecordHash(world, m_clientSimTick);
+    }
+
+    void NetworkSyncSystem::FallBackToFullSnapshot(NetworkManager& network) {
+        ++m_partialFallbackCount;
+        // in-flight 플래그는 내리지 않는다. 전체 스냅샷이 도착해 적용될 때 내려간다
+        // (WorldSnapshot 처리). 여기서 내리면 다음 불일치가 또 ResyncRequest를 띄워 겹친다.
+        // 반환값은 무시한다 — SendPacket의 false는 "큐에 넣었지만 지금 flush 실패"라
+        // 재전송으로 결국 나간다(VerifyPendingTickHashes의 같은 주석 참조).
+        network.SendWorldSnapshotRequest(m_lastSnapshotTick);
     }
 
     const WorldHashBreakdown& NetworkSyncSystem::RecordHash(World& world, uint64_t tick) {
@@ -372,8 +415,8 @@ namespace EF {
                     //    false를 보고 다시 보내면 요청이 중복 적재되고, 링크가 회복되는 순간
                     //    그게 한꺼번에 나가 서버가 스냅샷을 그 수만큼 답한다 — 막으려던
                     //    폭주가 오히려 링크가 나쁠 때 터진다.
-                    // 그 tick의 분해표를 함께 싣는다. 서버가 풀 단위로 비교해 부분 resync를
-                    // 할지 정한다(N4.3 — 서버는 아직 전체 스냅샷으로만 답한다. N4.4에서 연결).
+                    // 그 tick의 분해표를 함께 싣는다. 서버가 풀 단위로 비교해 부분 스냅샷으로
+                    // 답할지 전체 스냅샷으로 답할지 정한다(SelectPoolsForPartialResync).
                     network.SendResyncRequest(ResyncRequest{
                         .tick = tick,
                         .remoteHash = remoteHash,
@@ -420,6 +463,8 @@ namespace EF {
 
                 // 요청한 스냅샷이 도착했다. 다음 불일치에는 다시 요청할 수 있다.
                 m_resyncRequestInFlight = false;
+                // 더 새로운 정답이 왔다. 기다리던 부분 스냅샷은 버린다(partial-resync.md §5-6).
+                m_pendingPartialSnapshot.reset();
                 ++m_appliedSnapshotCount;
                 m_lastSnapshotTick = snapshot.tick;
                 m_clientSimTick = snapshot.tick;
@@ -444,6 +489,25 @@ namespace EF {
             if (NetworkManager::DecodeInputFrame(packet.payload, frame) && m_hasSnapshot && frame.tick > m_clientSimTick) {
                 m_frameBuffer.try_emplace(frame.tick, std::move(frame));
             }
+            break;
+        }
+
+        case Network::PacketType::PartialSnapshot: {
+            PartialSnapshot partial;
+            if (!NetworkManager::DecodePartialSnapshot(packet.payload, partial)) {
+                break;
+            }
+            // 요청한 적 없는 부분 스냅샷(이미 전체로 복구됐거나 중복 도착)은 버린다.
+            if (!m_hasSnapshot || !m_resyncRequestInFlight) {
+                break;
+            }
+            if (partial.tick < m_clientSimTick) {
+                // 이미 지나친 tick의 풀이다. 끼울 시점이 없으므로 전체로 간다.
+                // (§4.1의 논리상 일어나지 않아야 하지만, 와이어 값을 믿고 잘못 끼우는 것보다 낫다.)
+                FallBackToFullSnapshot(network);
+                break;
+            }
+            m_pendingPartialSnapshot = std::move(partial);
             break;
         }
 
@@ -531,12 +595,22 @@ namespace EF {
         case Network::PacketType::ResyncRequest: {
             ResyncRequest request;
             if (NetworkManager::DecodeResyncRequest(packet.payload, request)) {
-                // N4.3: 요청은 분해표를 싣고 오지만 아직 전체 스냅샷으로만 답한다.
-                // 부분 응답(SelectPoolsForPartialResync → PartialSnapshot)은 클라가 그것을
-                // 받아 적용할 수 있게 되는 N4.4에서 함께 연결한다 — 한쪽만 먼저 켜면
-                // 클라가 모르는 패킷을 버리고 resync in-flight 플래그가 영영 안 내려가
-                // 복구가 멈춘다.
-                network.SendWorldSnapshot(world.CreateSnapshot(SimulatedThroughTick(tick)), from);
+                // 클라가 불일치를 본 tick T의 분해표를 서버의 T 기록과 비교한다.
+                // 고칠 수 있으면 어긋난 풀만, 아니면(기록 없음·엔티티 불일치 등) 전체를 보낸다.
+                //
+                // 부분 스냅샷의 풀은 **지금 월드(= X = tick-1까지 시뮬레이션한 상태)** 의 값이다.
+                // T 시점의 값이 아니다 — 서버는 월드를 tick마다 보관하지 않는다(§3.2 버린 대안).
+                // 그래서 클라는 X까지 따라온 뒤에 끼운다.
+                const uint64_t snapshotTick = SimulatedThroughTick(tick);
+                const std::optional<std::vector<TypeHash>> pools =
+                    SelectPoolsForPartialResync(request.localBreakdown, HashBreakdownAt(request.tick));
+                if (pools) {
+                    network.SendPartialSnapshot(world.CreatePartialSnapshot(snapshotTick, *pools), from);
+                    ++m_partialSnapshotsSent;
+                } else {
+                    network.SendWorldSnapshot(world.CreateSnapshot(snapshotTick), from);
+                    ++m_fullResyncSnapshotsSent;
+                }
             }
             break;
         }

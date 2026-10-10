@@ -253,7 +253,7 @@ Frame N
 
 - action성 입력과 이동/aim 입력의 hold 정책이 아직 분리되지 않았다.
 - 클라이언트 예측/rollback은 아직 없다. 클라이언트는 서버 확정 프레임을 기다린 뒤 뒤따라 시뮬레이션한다.
-- endpoint timeout/연결 종료, delta snapshot, tick 단위 배칭은 아직 별도 과제다.
+- endpoint timeout/연결 종료는 구현됐다(250 tick, `Network.VanishedClientIsCleanedUpAfterTimeout`). resync 때의 delta는 **부분 resync**(어긋난 풀만 전송)로 구현됐다 — [partial-resync.md](partial-resync.md). 매 tick delta 스트리밍은 lockstep과 맞지 않아 하지 않는다(그 문서 §3.1). tick 단위 배칭은 아직 별도 과제다.
 
 ## 링크 열화 주입 — `LossyConnection`
 
@@ -308,4 +308,4 @@ lossy->Advance(tick);
 
 1. action성 입력 hold 정책을 이동/aim 입력과 분리한다.
 2. prediction/rollback을 붙여 클라이언트 체감 지연을 줄인다.
-3. delta snapshot, endpoint timeout/연결 종료, tick 단위 배칭을 별도 계층으로 추가한다.
+3. ~~delta snapshot, endpoint timeout/연결 종료~~(부분 resync·타임아웃으로 완료), tick 단위 배칭을 별도 계층으로 추가한다.

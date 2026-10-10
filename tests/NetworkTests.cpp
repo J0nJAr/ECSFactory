@@ -1866,7 +1866,8 @@ TEST_CASE(Network, DesyncedClientRecoversThroughResyncSnapshot) {
     clientSync.DebugSkipNextConfirmedInputFrameOnce();
     tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 1);
     EXPECT_TRUE(clientSync.HasHashMismatch());
-    const uint64_t snapshotTickBeforeRecovery = clientSync.LastSnapshotTick();
+    const uint64_t fullSnapshotsBeforeRecovery = clientSync.AppliedSnapshotCount();
+    const uint64_t partialSnapshotsBeforeRecovery = clientSync.AppliedPartialSnapshotCount();
 
     // 예산 30 tick(50Hz에서 0.6초). 실측은 3 tick / 스냅샷 3개다 —
     // 예산을 실측에 딱 맞추면 무관한 지연에도 깨지므로 한 자리 여유를 뒀다.
@@ -1878,10 +1879,18 @@ TEST_CASE(Network, DesyncedClientRecoversThroughResyncSnapshot) {
     EXPECT_FALSE(clientSync.HasHashMismatch());
     EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
 
-    // 복구가 "새 스냅샷을 받아서" 일어났는지 확인한다. 이게 없으면 우연히 상태가
+    // 복구가 "서버가 보낸 것을 적용해서" 일어났는지 확인한다. 이게 없으면 우연히 상태가
     // 다시 맞아떨어진 경우와 구분되지 않는다.
-    EXPECT_TRUE(report.appliedSnapshots >= 1);
-    EXPECT_TRUE(clientSync.LastSnapshotTick() > snapshotTickBeforeRecovery);
+    //
+    // N4.4부터 이 시나리오는 **부분 resync** 로 복구된다. 확정 프레임 하나를 건너뛰면
+    // Transform 풀만 어긋나고 엔티티 할당은 같기 때문이다(SelectPoolsForPartialResync).
+    // 그래서 부분 스냅샷이 하나 이상 적용되고 전체 스냅샷은 오지 않아야 한다. 전체 스냅샷이
+    // 왔다면 부분 경로가 끊겨서 조용히 폴백하고 있다는 뜻이다.
+    // (N4.3까지는 여기서 전체 스냅샷 적용을 단언했다.)
+    EXPECT_TRUE(clientSync.AppliedPartialSnapshotCount() > partialSnapshotsBeforeRecovery);
+    EXPECT_EQ(clientSync.AppliedSnapshotCount(), fullSnapshotsBeforeRecovery);
+    EXPECT_EQ(report.appliedSnapshots, std::size_t{ 0 });
+    EXPECT_EQ(clientSync.PartialFallbackCount(), uint64_t{ 0 });
 
     // 위치까지 같아야 한다(해시는 같은데 위치가 다르면 해시 쪽을 의심해야 한다).
     const PlayerProbe serverPlayer = ProbePlayer(serverWorld, clientId);
@@ -2055,12 +2064,15 @@ TEST_CASE(Network, ResyncRequestDoesNotStormOnSingleDesync) {
     // ⚠️ LastSnapshotTick 의 변화로 세면 안 된다. 같은 서버 tick 에 만들어진 스냅샷
     //    여러 개가 같은 라벨을 달고 오므로 전부 한 건으로 뭉개져서, 정작 재려는
     //    "중복 요청"이 보이지 않는다. 실제 적용 횟수를 센다.
-    const uint64_t appliedBefore = clientSync.AppliedSnapshotCount();
+    // N4.4부터 복구는 부분 스냅샷일 수도 있으므로 둘을 합쳐 센다. 이 테스트가 재는 것은
+    // "어느 경로로 복구했나"가 아니라 "디싱크 하나에 복구 응답이 몇 개 왔나"다.
+    const uint64_t appliedBefore = clientSync.AppliedSnapshotCount() + clientSync.AppliedPartialSnapshotCount();
     for (uint64_t i = 0; i < 40; ++i) {
         clientSync.QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
         tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 1);
     }
-    const uint64_t appliedSnapshots = clientSync.AppliedSnapshotCount() - appliedBefore;
+    const uint64_t appliedSnapshots =
+        clientSync.AppliedSnapshotCount() + clientSync.AppliedPartialSnapshotCount() - appliedBefore;
 
     // 한 번의 디싱크에 스냅샷 하나면 충분하다. 여유를 조금 두되(경합으로 하나 더 올 수 있다)
     // 예전처럼 매 tick 하나씩 오는 상태는 확실히 잡는다.
@@ -2403,4 +2415,139 @@ TEST_CASE(Network, ClientAndServerRecordMatchingHashBreakdownPerTick) {
 
     // 기록하지 않은 tick(아직 오지 않은 미래)은 nullptr이다.
     EXPECT_TRUE(clientSync.HashBreakdownAt(lastTick + 1000) == nullptr);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// N4.4 — 부분 resync가 동기화 시스템에서 실제로 돈다 (docs/design/partial-resync.md)
+//
+// 경로가 셋이고, 셋 다 주입으로 강제로 밟는다. 폴백은 부분 경로가 잘 될수록 평소에
+// 안 밟히므로, 주입하지 않으면 아무도 확인하지 않는다.
+//   (a) 부분 경로      — Transform 풀만 어긋남 → 서버가 부분 스냅샷 → 클라가 X에서 끼움
+//   (b) 서버 쪽 폴백   — 엔티티 할당이 어긋남 → 서버가 처음부터 전체 스냅샷
+//   (c) 클라 쪽 폴백   — 부분으로 끼웠는데 다른 풀도 망가져 있음 → 즉시 검증 실패 → 전체 요청
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+    struct PartialResyncRig {
+        EF::World serverWorld;
+        EF::World clientWorld;
+        EF::NetworkSyncSystem* serverSync = nullptr;
+        EF::NetworkSyncSystem* clientSync = nullptr;
+    };
+
+    // WireLockstepPair와 같은 배선이지만 서버 쪽 동기화 시스템도 돌려받는다(서버 카운터를 보려고).
+    void WirePartialResyncRig(PartialResyncRig& rig) {
+        auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+        rig.serverWorld.RegisterSnapshotComponent<EF::Transform>();
+        rig.serverWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+        rig.serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+        rig.serverSync = &rig.serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+        rig.clientSync = &AttachClientWorld(rig.clientWorld, clientConnection);
+    }
+
+    // 불일치 플래그가 내려갈 때까지 굴린다(이동을 멈추지 않는다 — 움직이는 월드에서도
+    // 복구돼야 한다. 정지한 월드로 재면 tick 라벨 결함 같은 것을 놓친다).
+    // 복구에 걸린 tick 수를 돌려준다. 0이면 예산 안에 복구되지 않았다.
+    uint64_t DriveMovingUntilNoMismatch(PartialResyncRig& rig, EF::Fixed64 dt, uint64_t& tick, uint64_t budget) {
+        for (uint64_t used = 1; used <= budget; ++used) {
+            rig.clientSync->QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
+            tick = AdvanceLockstepPair(rig.clientWorld, rig.serverWorld, dt, tick, 1);
+            if (!rig.clientSync->HasHashMismatch()) {
+                return used;
+            }
+        }
+        return 0;
+    }
+
+    // 복구 뒤 계속 움직이면서 불일치가 다시 뜨지 않는지 본다.
+    void ExpectStaysInSync(PartialResyncRig& rig, EF::Fixed64 dt, uint64_t& tick, uint64_t ticks) {
+        for (uint64_t i = 0; i < ticks; ++i) {
+            rig.clientSync->QueueLocalInput(EF::InputCommand{ .buttonMask = EF::kInputMoveRight });
+            tick = AdvanceLockstepPair(rig.clientWorld, rig.serverWorld, dt, tick, 1);
+            EXPECT_FALSE(rig.clientSync->HasHashMismatch());
+        }
+    }
+}
+
+// (a) 부분 경로 — 서버는 부분 스냅샷 하나로 답하고, 전체 스냅샷은 한 번도 보내지 않는다.
+TEST_CASE(Network, PartialResyncRepairsTransformOnlyDesync) {
+    PartialResyncRig rig;
+    WirePartialResyncRig(rig);
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(rig.clientWorld, rig.serverWorld, *rig.clientSync, dt, clientId);
+
+    rig.clientSync->DebugSkipNextConfirmedInputFrameOnce();
+    tick = AdvanceLockstepPair(rig.clientWorld, rig.serverWorld, dt, tick, 1);
+    EXPECT_TRUE(rig.clientSync->HasHashMismatch());
+
+    const uint64_t fullBefore = rig.clientSync->AppliedSnapshotCount();
+    EXPECT_TRUE(DriveMovingUntilNoMismatch(rig, dt, tick, 30) != 0);
+
+    EXPECT_EQ(rig.serverSync->PartialSnapshotsSent(), uint64_t{ 1 });
+    EXPECT_EQ(rig.serverSync->FullResyncSnapshotsSent(), uint64_t{ 0 });
+    EXPECT_EQ(rig.clientSync->AppliedPartialSnapshotCount(), uint64_t{ 1 });
+    EXPECT_EQ(rig.clientSync->AppliedSnapshotCount(), fullBefore);
+    EXPECT_EQ(rig.clientSync->PartialFallbackCount(), uint64_t{ 0 });
+
+    ExpectStaysInSync(rig, dt, tick, 20);
+}
+
+// (b) 서버 쪽 폴백 — 엔티티 할당이 갈라지면 풀만으로는 못 고치므로 처음부터 전체 스냅샷이다.
+//
+// 주입: 클라 월드에서 확정 경로 밖으로 엔티티를 하나 만들었다 지운다. 바로 N4.1이 금지한
+// 동작이고, 풀에는 흔적이 없지만 엔티티 해시가 달라진다.
+TEST_CASE(Network, EntityAllocationDesyncFallsBackToFullSnapshot) {
+    PartialResyncRig rig;
+    WirePartialResyncRig(rig);
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(rig.clientWorld, rig.serverWorld, *rig.clientSync, dt, clientId);
+    EXPECT_FALSE(rig.clientSync->HasHashMismatch());
+
+    rig.clientWorld.DestroyEntity(rig.clientWorld.CreateEntity());
+
+    const uint64_t fullBefore = rig.clientSync->AppliedSnapshotCount();
+    EXPECT_TRUE(DriveMovingUntilNoMismatch(rig, dt, tick, 30) != 0);
+
+    EXPECT_EQ(rig.serverSync->PartialSnapshotsSent(), uint64_t{ 0 });
+    EXPECT_TRUE(rig.serverSync->FullResyncSnapshotsSent() >= 1);
+    EXPECT_TRUE(rig.clientSync->AppliedSnapshotCount() > fullBefore);
+    EXPECT_EQ(rig.clientSync->AppliedPartialSnapshotCount(), uint64_t{ 0 });
+
+    ExpectStaysInSync(rig, dt, tick, 20);
+}
+
+// (c) 클라 쪽 폴백 — "어긋남은 번진다".
+//
+// 주입 두 겹: 확정 프레임 하나를 건너뛰어 Transform을 어긋나게 하고(이 시점 분해표는
+// Transform만 다르다 → 서버는 Transform만 보낸다), **요청이 나간 뒤에** PlayerControl까지
+// 망가뜨린다. 서버가 T 기준으로 고른 풀만으로는 부족한 상황이다. 클라는 끼운 직후
+// worldHash가 안 맞는 것을 보고 다음 TickHash를 기다리지 않고 전체 스냅샷을 요청해야 한다.
+TEST_CASE(Network, InsufficientPartialSnapshotFallsBackToFull) {
+    PartialResyncRig rig;
+    WirePartialResyncRig(rig);
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(rig.clientWorld, rig.serverWorld, *rig.clientSync, dt, clientId);
+
+    rig.clientSync->DebugSkipNextConfirmedInputFrameOnce();
+    tick = AdvanceLockstepPair(rig.clientWorld, rig.serverWorld, dt, tick, 1);
+    EXPECT_TRUE(rig.clientSync->HasHashMismatch());
+
+    // 같은 tick에 요청이 나갔고(무손실 메모리 링크, 탐지는 주입과 같은 tick) 서버도 이미
+    // 부분 스냅샷을 보냈다. 클라가 그걸 끼우기 전에 다른 풀을 망가뜨린다.
+    EXPECT_EQ(rig.serverSync->PartialSnapshotsSent(), uint64_t{ 1 });
+    rig.clientWorld.CreateView<EF::PlayerControl>().ForEach([](EF::EntityIndex, EF::PlayerControl& control) {
+        control.clientId += 1000;
+    });
+
+    const uint64_t fullBefore = rig.clientSync->AppliedSnapshotCount();
+    EXPECT_TRUE(DriveMovingUntilNoMismatch(rig, dt, tick, 30) != 0);
+
+    EXPECT_EQ(rig.clientSync->PartialFallbackCount(), uint64_t{ 1 });
+    EXPECT_EQ(rig.clientSync->AppliedPartialSnapshotCount(), uint64_t{ 0 });
+    EXPECT_TRUE(rig.clientSync->AppliedSnapshotCount() > fullBefore);
+    EXPECT_TRUE(ProbePlayer(rig.clientWorld, clientId).found);  // 전체 스냅샷이 clientId를 되돌렸다
+
+    ExpectStaysInSync(rig, dt, tick, 20);
 }

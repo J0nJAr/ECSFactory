@@ -43,7 +43,10 @@ namespace EF {
     //  - 서버: 매 tick 입력을 확정하고(ConfirmInputs) 서버 월드에 적용한 뒤,
     //          확정셋을 InputFrame으로 전 클라에 재전파하고 TickHash를 방송
     //  - 클라: InputFrame을 tick 순서대로 버퍼링했다가 clientSimTick+1부터 적용,
-    //          TickHash로 디싱크를 검사하고 어긋나면 ResyncRequest
+    //          TickHash로 디싱크를 검사하고 어긋나면 ResyncRequest(그 tick의 해시 분해표 포함)
+    //  - 복구: 서버는 어긋난 풀만 PartialSnapshot으로 보내고, 클라는 자기 시뮬레이션이
+    //          그 tick에 도달했을 때 갈아끼운 뒤 즉시 검증한다. 안 되면 전체 스냅샷으로 폴백
+    //          (docs/design/partial-resync.md)
     //  - 클라: 서버 tick 추정, 입력 지연(kInputDelayTicks), 입력 이중화 재전송
     //
     // 보장:
@@ -90,6 +93,25 @@ namespace EF {
         // 한 건으로 뭉개진다.** resync 폭주를 재려면 그 구분이 정확히 필요해서 따로 센다.
         [[nodiscard]] uint64_t AppliedSnapshotCount() const noexcept {
             return m_appliedSnapshotCount;
+        }
+
+        // 클라: 적용에 성공한(갈아끼운 뒤 서버 worldHash와 일치한) 부분 스냅샷 수.
+        [[nodiscard]] uint64_t AppliedPartialSnapshotCount() const noexcept {
+            return m_appliedPartialSnapshotCount;
+        }
+
+        // 클라: 부분 스냅샷으로 못 고쳐서 전체 스냅샷을 다시 요청한 횟수.
+        [[nodiscard]] uint64_t PartialFallbackCount() const noexcept {
+            return m_partialFallbackCount;
+        }
+
+        // 서버: ResyncRequest에 부분 / 전체 스냅샷으로 답한 횟수(조인 스냅샷은 세지 않는다).
+        [[nodiscard]] uint64_t PartialSnapshotsSent() const noexcept {
+            return m_partialSnapshotsSent;
+        }
+
+        [[nodiscard]] uint64_t FullResyncSnapshotsSent() const noexcept {
+            return m_fullResyncSnapshotsSent;
         }
 
         [[nodiscard]] bool HasHashMismatch() const noexcept {
@@ -174,6 +196,11 @@ namespace EF {
         void ApplyBufferedInputFrames(World& world, NetworkManager& network);
         void VerifyPendingTickHashes(NetworkManager& network);
 
+        // 보류 중인 부분 스냅샷이 지금 tick의 것이면 갈아끼우고 검증한다. 아니면 아무것도 안 한다.
+        void TryApplyPendingPartialSnapshot(World& world, NetworkManager& network);
+        // 부분 복구를 포기하고 전체 스냅샷을 요청한다. in-flight 플래그는 그대로 둔다.
+        void FallBackToFullSnapshot(NetworkManager& network);
+
         // 지금 시뮬레이션이 끝난 tick의 해시 분해표를 기록하고, 오래된 항목을 잘라낸다.
         // 서버·클라 양쪽이 쓴다. 기록한 분해표를 돌려준다(서버는 그 worldHash로 TickHash를 보낸다).
         const WorldHashBreakdown& RecordHash(World& world, uint64_t tick);
@@ -203,9 +230,23 @@ namespace EF {
         // ResyncRequest를 하나만 띄워 두기 위한 플래그.
         // 디싱크가 나면 그 뒤 tick들도 줄줄이 어긋나는데, 그때마다 요청하면 서버가
         // 요청마다 월드 전체 스냅샷을 reliable로 답해서 대역폭이 무너진다.
-        // 스냅샷을 적용하면 내려간다(VerifyPendingTickHashes / WorldSnapshot 처리 참조).
+        // 전체 스냅샷을 적용하거나, 부분 스냅샷을 적용해 서버 worldHash와 일치하면 내려간다
+        // (WorldSnapshot 처리 / TryApplyPendingPartialSnapshot). 부분 복구에 실패해 전체로
+        // 폴백하는 동안에는 켜진 채로 남는다.
         bool m_resyncRequestInFlight = false;
         uint64_t m_appliedSnapshotCount = 0;
+        uint64_t m_appliedPartialSnapshotCount = 0;
+        uint64_t m_partialFallbackCount = 0;
+        uint64_t m_partialSnapshotsSent = 0;
+        uint64_t m_fullResyncSnapshotsSent = 0;
+
+        // 서버가 보낸 부분 스냅샷. 클라 시뮬레이션이 그 tick에 도달할 때까지 기다린다.
+        //
+        // ⚠️ 왜 받자마자 적용하지 않나: 부분 스냅샷의 풀은 서버 tick X 시점의 값이고, 클라는
+        //    보통 X보다 뒤처져 있다. 지금 끼우면 X의 풀과 X보다 과거의 다른 풀이 한 월드에
+        //    공존한다(partial-resync.md §4.1). 클라가 X보다 앞서는 일은 없다 — 서버는 tick
+        //    S를 처리하며 X = S-1의 풀을 뜨고, 그때까지 클라가 받을 수 있는 확정 프레임은 S-1까지다.
+        std::optional<PartialSnapshot> m_pendingPartialSnapshot;
         uint64_t m_lastSnapshotTick = 0;
         uint64_t m_clientSimTick = 0;
         uint64_t m_serverTickEstimate = 0;

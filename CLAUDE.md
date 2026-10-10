@@ -208,7 +208,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 
 - **trivially-copyable** 컴포넌트만 스냅샷 대상이고, raw 바이트로 복사된다. 비trivial 컴포넌트는 제외된다.
 - 클라이언트는 타입마다 `World::RegisterSnapshotComponent<T>()`로 명시 등록해야 한다(trivially-copyable을 static_assert). `ApplySnapshot`은 레지스트리를 처음부터 재구성하고, `hash`/`size`/`alignment`/`isTrivial`/바이트 수가 안 맞는 타입은 **거부**한다.
-- 스냅샷은 **조인과 resync 전용**이다 — 매 tick 상태 스트리밍이 아니다(아래 lockstep 참조).
+- 스냅샷은 **조인과 resync 전용**이다 — 매 tick 상태 스트리밍이 아니다(아래 lockstep 참조). resync는 **부분 스냅샷이 먼저**다: 클라가 불일치를 본 tick의 해시 분해표를 보내면 서버가 어긋난 풀만 `PartialSnapshot`으로 보내고(`World::CreatePartialSnapshot` / `ApplyPartialSnapshot`, 전부 아니면 전무), 엔티티 할당이 갈라졌거나 부분 복구로 안 맞으면 전체 `WorldSnapshot`으로 폴백한다([partial-resync.md](docs/design/partial-resync.md)).
 - `ComponentSnapshot.entities`에는 `EntityIndex`만 실리고 **version은 실리지 않는다.** 따라서 컴포넌트가 `EntityId`로 다른 엔티티를 참조하면 왕복에서 살아남지 못한다. 복제되는 링크는 안정적인 도메인 id(현재는 `clientId`)로 걸어야 한다.
 - `World::ComputeHash()`가 결정론 체크섬이다. 실제 계산은 `ComputeHashBreakdown()`이 층별로 한다 — `EntityManager` 상태 해시, trivial 풀마다의 해시, 그리고 그 둘에서 **유도한** 월드 해시(계산 경로는 하나뿐이다. 부분 resync가 풀 단위로 비교하기 위한 구조, [partial-resync.md](docs/design/partial-resync.md)). 월드 해시가 `TickHash` 비교 → `ResyncRequest`를 구동한다. 풀 순회는 **`TypeInfo::hash` 오름차순**이다 — 프로세스 로컬인 `index` 순서로 돌면 타입 첫 사용 순서가 다른 두 프로세스가 같은 월드에서 다른 해시를 낸다. `RegisterPresentationComponent<T>()`로 등록된 클라 전용 표현 컴포넌트는 해시에서 빠진다. 엔티티 할당은 뺄 방법이 없으므로 **어떤 peer도 월드 엔티티를 확정 경로 밖에서 만들거나 지우면 안 된다**(N4.1).
 
@@ -229,7 +229,9 @@ tick당 흐름:
         InputFrame(tick, events, confirmed) ──reliable──▶ 모든 클라
         TickHash(tick, world.ComputeHash()) ──sequenced──▶ 모든 클라
 클라:   InputFrame을 버퍼링 → clientSimTick+1 프레임이 있으면 events → inputs 순으로 적용하고 ++clientSimTick
-        TickHash 불일치 → ResyncRequest → 새 WorldSnapshot
+        TickHash 불일치 → ResyncRequest(그 tick의 해시 분해표)
+        서버: 어긋난 풀만 PartialSnapshot(X = tick-1)   또는   전체 WorldSnapshot(폴백)
+        클라: clientSimTick == X에서 풀을 갈아끼우고 즉시 worldHash 검증 → 실패하면 전체 요청
 ```
 
 `NetworkSyncSystem`([NetworkSyncSystem.hpp](EngineCore/Network/NetworkSyncSystem.hpp))이 양쪽 역할(`NetworkSyncMode::Client` / `Server`)의 이 상태 머신을 들고 있는 `ISystem`이고, `Hello → Welcome → TypeTable → WorldSnapshot` 핸드셰이크도 여기 있다. `ApplyConfirmedInputs`([Gameplay/PlayerMovement.hpp](EngineCore/Gameplay/PlayerMovement.hpp))는 각 입력의 `clientId`를 `PlayerControl` 엔티티에 매칭해서 그 `Transform`을 순수 `Fixed64`로 옮긴다.
@@ -265,6 +267,7 @@ tick당 흐름:
 - 📌 **클라 전용 표현 컴포넌트는 `RegisterPresentationComponent<T>()`로 해시에서 뺀다.** 서버엔 그 풀이 없어서, 빼지 않으면 매 tick 불일치 → 무한 resync가 된다. 기본값은 "해시에 포함"이다(깜빡 잊으면 시끄럽게 실패하는 쪽).
 - 📌 **`View::ForEach`는 `EntityId`가 아니라 `EntityIndex`를 준다.** `EntityId`로 받아도 암묵 변환으로 컴파일되지만 version이 0인 가짜 id가 된다. id가 필요하면 range-for를 쓴다.
 - 📌 **클라 생존 판정은 전송 계층(`PumpConnection`)에서, 등록 시점에 반드시 현재 tick을 찍는다.** 조용한 클라는 ack만 보내는데 ack만 든 데이터그램은 `TryReceive`로 올라오지 않는다. 그리고 등록 시 0으로 두면 오래 떠 있던 서버가 신규 접속을 즉시 쫓아낸다(`Network.ClientCanJoinLongRunningServer`). 타임아웃은 250 tick(5초).
+- 📌 **부분 스냅샷은 `clientSimTick == X`(= 스냅샷의 tick)에서만 끼운다.** 풀은 서버 tick X 시점의 값이라, 클라가 뒤처진 상태에서 끼우면 서로 다른 시점의 풀이 한 월드에 섞인다. 그래서 보류했다가 확정 프레임으로 X까지 따라온 순간, 다음 프레임 적용 **전에** 끼운다. 그리고 끼운 직후 서버가 실어 보낸 X 시점 `worldHash`와 비교한다 — 어긋남은 번지므로 서버가 고른 풀만으로 부족할 수 있다. `Network.InsufficientPartialSnapshotFallsBackToFull`이 지킨다.
 - 📌 **`kReliabilityVersion`은 3이다.** 2: `InputFrame`에 세션 이벤트가 붙어 앱 레코드 배치가 바뀌었다. 3: `ResyncRequest`에 해시 분해표, `PartialSnapshot` 패킷 추가(부분 resync). 층 구분상 앱 계층 버전(Hello/Welcome)이 맞는 자리지만 그게 없어서 여기서 막는다.
 
 아직 **미완성 / 스텁**인 것:
