@@ -51,6 +51,48 @@ namespace EF {
         std::vector<ComponentSnapshot> components;
     };
 
+    /// 풀 하나의 결정론 해시. 부분 resync가 "어느 풀이 어긋났나"를 판정하는 단위다.
+    struct PoolHash {
+        TypeHash type = 0;
+        uint64_t hash = 0;
+    };
+
+    /**
+     * `World::ComputeHash()` 를 층별로 쪼갠 결과. 부분 resync(docs/design/partial-resync.md)용.
+     *
+     * - `entityHash` — EntityManager 할당 상태(next index / versions / free list)만의 해시.
+     * - `pools` — 해시 대상 풀마다 하나. **`type` 오름차순으로 정렬되어 있다.**
+     * - `worldHash` — 위 둘을 정해진 순서로 섞은 값. `TickHash` 가 싣는 바로 그 값이다.
+     *
+     * ⚠️ 불변식: `worldHash` 는 반드시 `entityHash` 와 `pools` 에서 **유도**된다.
+     *    월드 해시를 따로 계산하는 두 번째 경로를 만들면 언젠가 어긋나고, 그러면
+     *    "풀 해시는 전부 같은데 월드 해시만 다른" 상태가 생겨 부분 resync가 고를 풀이 없어진다.
+     *    그래서 `ComputeHash()` 도 이 구조체의 `worldHash` 를 돌려줄 뿐이다.
+     */
+    struct WorldHashBreakdown {
+        uint64_t entityHash = 0;
+        std::vector<PoolHash> pools;
+        uint64_t worldHash = 0;
+    };
+
+    namespace Internal {
+        /// 64비트 FNV-1a 누산기. 정수는 빅엔디안 바이트 순서로 섞는다(플랫폼과 무관하게 같은 값).
+        struct Fnv1a64 {
+            uint64_t value = 14695981039346656037ull;
+
+            void MixByte(std::byte byte) noexcept {
+                value ^= static_cast<uint64_t>(std::to_integer<uint8_t>(byte));
+                value *= 1099511628211ull;
+            }
+
+            void MixUInt64(uint64_t number) noexcept {
+                for (int shift = 56; shift >= 0; shift -= 8) {
+                    MixByte(static_cast<std::byte>((number >> shift) & 0xFF));
+                }
+            }
+        };
+    }
+
     // 시뮬레이션 한 덩어리. Registry(엔티티·컴포넌트) + SystemRegistry(시스템) +
     // 타입 키 리소스 맵(월드별 싱글턴, 예: NetworkManager)의 조합이다.
     //
@@ -326,10 +368,18 @@ namespace EF {
         }
 
         /**
-         * 결정론 검증용 체크섬. 먼저 `EntityManager` 상태(next index / versions / free list)를,
-         * 이어서 trivially-copyable 풀의 (타입, dense index, 바이트)를 FNV-1a로 섞는다.
+         * 결정론 체크섬을 층별로 계산한다. `EntityManager` 상태(next index / versions / free list)의
+         * 해시, trivially-copyable 풀마다의 (타입, dense index, 바이트) 해시를 각각 FNV-1a로 만든 뒤,
+         * 그 둘을 섞어 월드 해시를 유도한다. 층으로 나눈 이유는 부분 resync다 — 디싱크가 나면
+         * 어느 풀이 어긋났는지 알아야 그 풀만 보낼 수 있다(N4.2, docs/design/partial-resync.md).
          *
-         * **풀 순회 순서는 `TypeInfo::hash` 오름차순으로 고정한다.** 이게 이 함수의 유일한
+         * 버린 대안: 월드 해시는 예전처럼 한 누산기로 전부 섞고, 풀 해시는 따로 한 번 더 계산하기.
+         * 값은 예전과 같게 유지되지만 tick마다 모든 풀의 바이트를 두 번 돈다. 그리고 두 경로가
+         * 따로 있으면 언젠가 어긋난다. 해시 값 자체가 바뀌는 건 문제가 아니다 — 서버와 클라가
+         * 같은 코드로 함께 바뀌고, 해시 값을 디스크에 저장하는 곳도 없다.
+         *    (옛 버전 peer와 섞이면 TickHash가 어긋나지만, 그런 혼합은 와이어 버전 검사가 막을 일이다.)
+         *
+         * **풀 순회 순서는 `TypeInfo::hash` 오름차순으로 고정한다.** 이게 이 함수의 가장
          * 비자명한 부분이라 이유를 남긴다.
          *
          * `Registry::GetPools()` 가 돌려주는 벡터는 `TypeInfo::index` 로 인덱싱되어 있고,
@@ -349,7 +399,7 @@ namespace EF {
          *   되지만 index 기반 O(1) 풀 조회를 잃는다. 조회는 컴포넌트를 만질 때마다 일어나고
          *   `ComputeHash` 는 tick당 한 번이다 — 비용은 드문 쪽이 무는 게 맞다.
          *
-         * 비용: 컴포넌트 타입 수 P는 수십 규모라 O(P log P) 정렬 + 작은 vector 하나의 할당은,
+         * 비용: 컴포넌트 타입 수 P는 수십 규모라 O(P log P) 정렬 + 작은 vector 두 개의 할당은,
          * 이 함수가 어차피 도는 "모든 풀의 전체 바이트"(수천~수만 바이트) 앞에서 무시할 수준이다.
          * 프로파일에 잡히면 그때 캐시를 넣되, 풀 추가·삭제 무효화까지 함께 설계해야 한다.
          *
@@ -376,31 +426,26 @@ namespace EF {
          *    클라 전용 표현용 엔티티(카메라 등)를 이 월드에 만들면 매 tick 불일치 → 무한 resync다.
          *    표현 컴포넌트는 `RegisterPresentationComponent` 로 뺄 수 있지만 엔티티 할당은 뺄 방법이 없다.
          */
-        [[nodiscard]] uint64_t ComputeHash() const {
-            uint64_t hash = 14695981039346656037ull;
-            auto mixByte = [&hash](std::byte value) {
-                hash ^= static_cast<uint64_t>(std::to_integer<uint8_t>(value));
-                hash *= 1099511628211ull;
-            };
-            auto mixUInt64 = [&mixByte](uint64_t value) {
-                for (int shift = 56; shift >= 0; shift -= 8) {
-                    mixByte(static_cast<std::byte>((value >> shift) & 0xFF));
+        [[nodiscard]] WorldHashBreakdown ComputeHashBreakdown() const {
+            WorldHashBreakdown breakdown;
+
+            // 1층 — 엔티티 할당 상태. 위 함수 주석의 "엔티티 할당 상태도 섞는다" 참조.
+            {
+                Internal::Fnv1a64 entityHash;
+                const EntityStateView entities = m_registry.ViewEntityState();
+                entityHash.MixUInt64(entities.nextEntityIndex);
+                entityHash.MixUInt64(static_cast<uint64_t>(entities.versions.size()));
+                for (EntityVersion version : entities.versions) {
+                    entityHash.MixUInt64(version);
                 }
-            };
-
-            // 0단계 — 엔티티 할당 상태. 위 함수 주석의 "엔티티 할당 상태도 섞는다" 참조.
-            const EntityStateView entities = m_registry.ViewEntityState();
-            mixUInt64(entities.nextEntityIndex);
-            mixUInt64(static_cast<uint64_t>(entities.versions.size()));
-            for (EntityVersion version : entities.versions) {
-                mixUInt64(version);
-            }
-            mixUInt64(static_cast<uint64_t>(entities.freeIndices.size()));
-            for (EntityIndex freeIndex : entities.freeIndices) {
-                mixUInt64(freeIndex);
+                entityHash.MixUInt64(static_cast<uint64_t>(entities.freeIndices.size()));
+                for (EntityIndex freeIndex : entities.freeIndices) {
+                    entityHash.MixUInt64(freeIndex);
+                }
+                breakdown.entityHash = entityHash.value;
             }
 
-            // 1단계 — 섞을 풀을 고른다. 여기서는 순서를 신경 쓰지 않는다.
+            // 2층 — 섞을 풀을 고른다. 여기서는 순서를 신경 쓰지 않는다.
             std::vector<const IPool*> hashedPools;
             hashedPools.reserve(m_registry.GetPools().size());
 
@@ -418,7 +463,7 @@ namespace EF {
                 hashedPools.push_back(pool.get());
             }
 
-            // 2단계 — 프로세스 간에 안정적인 기준으로 순서를 고정한다. 위 함수 주석 참조.
+            // 프로세스 간에 안정적인 기준으로 순서를 고정한다. 위 함수 주석 참조.
             std::sort(
                 hashedPools.begin(),
                 hashedPools.end(),
@@ -426,23 +471,44 @@ namespace EF {
                     return lhs->GetType().hash < rhs->GetType().hash;
                 });
 
-            // 3단계 — 고정된 순서로 섞는다.
+            // 풀마다 **독립된** 해시를 만든다. 풀 해시끼리 누산기를 공유하면 앞 풀의 내용이
+            // 뒤 풀 해시에 스며들어, "이 풀만 다르다"를 판정할 수 없게 된다.
+            breakdown.pools.reserve(hashedPools.size());
             for (const IPool* pool : hashedPools) {
                 const TypeInfo& type = pool->GetType();
 
-                mixUInt64(type.hash);
-                mixUInt64(static_cast<uint64_t>(type.size));
+                Internal::Fnv1a64 poolHash;
+                poolHash.MixUInt64(type.hash);
+                poolHash.MixUInt64(static_cast<uint64_t>(type.size));
 
                 for (EntityIndex entity : pool->GetDenseEntities()) {
-                    mixUInt64(entity);
+                    poolHash.MixUInt64(entity);
                 }
 
                 for (std::byte value : pool->GetRawBytes()) {
-                    mixByte(value);
+                    poolHash.MixByte(value);
                 }
+
+                breakdown.pools.push_back(PoolHash{ .type = type.hash, .hash = poolHash.value });
             }
 
-            return hash;
+            // 3층 — 월드 해시는 위 두 층에서만 유도한다(WorldHashBreakdown의 불변식).
+            // 풀 개수를 먼저 섞어, 풀 하나가 통째로 빠진 월드와 경계가 모호하지 않게 한다.
+            Internal::Fnv1a64 worldHash;
+            worldHash.MixUInt64(breakdown.entityHash);
+            worldHash.MixUInt64(static_cast<uint64_t>(breakdown.pools.size()));
+            for (const PoolHash& pool : breakdown.pools) {
+                worldHash.MixUInt64(pool.type);
+                worldHash.MixUInt64(pool.hash);
+            }
+            breakdown.worldHash = worldHash.value;
+
+            return breakdown;
+        }
+
+        /// @brief 결정론 체크섬. `ComputeHashBreakdown().worldHash` 와 같다 — 계산 경로는 하나뿐이다.
+        [[nodiscard]] uint64_t ComputeHash() const {
+            return ComputeHashBreakdown().worldHash;
         }
     };
 

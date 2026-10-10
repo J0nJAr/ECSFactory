@@ -2349,3 +2349,54 @@ TEST_CASE(Network, ClientCanJoinLongRunningServer) {
     EXPECT_TRUE(ProbePlayer(serverWorld, clientId).found);
     EXPECT_TRUE(ProbePlayer(clientWorld, clientId).found);
 }
+
+// N4.2 — 서버와 클라가 tick별 해시 분해표를 기록하고, 같은 tick의 표는 풀 단위까지 일치한다.
+//
+// 부분 resync는 "클라가 tick T에 본 분해표"와 "서버가 기록해 둔 tick T의 분해표"를 비교해
+// 어긋난 풀을 고른다. 그러려면 정상 세션에서 두 기록이 **같은 tick 의미**로 남아야 한다 —
+// 서버는 tick의 입력을 적용한 직후, 클라는 그 tick의 확정 프레임을 적용한 직후.
+// 한쪽이라도 한 칸 밀려 기록하면 정상 세션에서도 모든 풀이 "다름"으로 보인다.
+TEST_CASE(Network, ClientAndServerRecordMatchingHashBreakdownPerTick) {
+    auto [clientConnection, serverConnection] = EF::Network::MemoryConnection::CreatePair();
+
+    EF::World serverWorld;
+    serverWorld.RegisterSnapshotComponent<EF::Transform>();
+    serverWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+    serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    EF::NetworkSyncSystem& serverSync = serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    EF::NetworkSyncSystem& clientSync = AttachClientWorld(clientWorld, clientConnection);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    uint32_t clientId = 0;
+    uint64_t tick = DriveToMovingLockstep(clientWorld, serverWorld, clientSync, dt, clientId);
+    tick = AdvanceLockstepPair(clientWorld, serverWorld, dt, tick, 10);
+
+    EXPECT_TRUE(clientSync.HasSnapshot());
+    EXPECT_FALSE(clientSync.HasHashMismatch());
+
+    // 클라가 마지막으로 시뮬레이션한 tick과 그 직전 몇 tick을 비교한다(이동 중이라 매 tick 값이 다르다).
+    const uint64_t lastTick = clientSync.ClientSimTick();
+    for (uint64_t t = lastTick - 3; t <= lastTick; ++t) {
+        const EF::WorldHashBreakdown* client = clientSync.HashBreakdownAt(t);
+        const EF::WorldHashBreakdown* server = serverSync.HashBreakdownAt(t);
+        EXPECT_TRUE(client != nullptr);
+        EXPECT_TRUE(server != nullptr);
+        if (client == nullptr || server == nullptr) {
+            continue;
+        }
+
+        EXPECT_EQ(client->entityHash, server->entityHash);
+        EXPECT_EQ(client->worldHash, server->worldHash);
+        EXPECT_EQ(client->pools.size(), server->pools.size());
+        EXPECT_TRUE(!client->pools.empty());
+        for (std::size_t i = 0; i < client->pools.size() && i < server->pools.size(); ++i) {
+            EXPECT_EQ(client->pools[i].type, server->pools[i].type);
+            EXPECT_EQ(client->pools[i].hash, server->pools[i].hash);
+        }
+    }
+
+    // 기록하지 않은 tick(아직 오지 않은 미래)은 nullptr이다.
+    EXPECT_TRUE(clientSync.HashBreakdownAt(lastTick + 1000) == nullptr);
+}

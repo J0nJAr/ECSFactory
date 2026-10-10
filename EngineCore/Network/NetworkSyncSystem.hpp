@@ -88,6 +88,18 @@ namespace EF {
             return m_serverTickEstimate;
         }
 
+        /// @brief tick의 해시 분해표. 기록이 없으면(창 밖이거나 아직 오지 않은 tick) nullptr.
+        ///
+        /// 서버는 그 tick의 입력을 적용한 직후, 클라는 그 tick의 확정 프레임을 적용한 직후의
+        /// 월드를 기록한다 — 두 기록이 같은 tick 의미를 갖는다. 부분 resync가 이 둘을 비교해
+        /// 어긋난 풀을 고른다(docs/design/partial-resync.md §4.2).
+        ///
+        /// ⚠️ 포인터는 다음 FixedUpdate까지만 유효하다(기록 창이 밀리면 항목이 지워진다).
+        [[nodiscard]] const WorldHashBreakdown* HashBreakdownAt(uint64_t tick) const {
+            auto it = m_hashByTick.find(tick);
+            return it == m_hashByTick.end() ? nullptr : &it->second;
+        }
+
         void QueueLocalInput(const InputCommand& command);
 
         /**
@@ -142,8 +154,9 @@ namespace EF {
         void ApplyBufferedInputFrames(World& world, NetworkManager& network);
         void VerifyPendingTickHashes(NetworkManager& network);
 
-        // 지금 시뮬레이션이 끝난 tick의 해시를 기록하고, 오래된 항목을 잘라낸다.
-        void RecordLocalHash(World& world, uint64_t tick);
+        // 지금 시뮬레이션이 끝난 tick의 해시 분해표를 기록하고, 오래된 항목을 잘라낸다.
+        // 서버·클라 양쪽이 쓴다. 기록한 분해표를 돌려준다(서버는 그 worldHash로 TickHash를 보낸다).
+        const WorldHashBreakdown& RecordHash(World& world, uint64_t tick);
 
         void HandlePacketOnClient(World& world, NetworkManager& network, const Network::NetworkPacket& packet);
         void HandlePacketOnServer(World& world, NetworkManager& network, const Network::Endpoint& from, const Network::NetworkPacket& packet, uint64_t tick);
@@ -185,14 +198,18 @@ namespace EF {
         std::map<uint64_t, InputFrame> m_frameBuffer;
         std::map<uint64_t, uint64_t> m_pendingTickHashes;
 
-        // tick별 로컬 월드 해시. TickHash 비교의 기준이 된다.
+        // tick별 로컬 해시 분해표(엔티티·풀별·월드). 클라에서는 TickHash 비교의 기준이고,
+        // 양쪽 모두 부분 resync가 "tick T에 어느 풀이 어긋났나"를 판정하는 근거다.
         //
         // 왜 "현재" 해시를 그때그때 계산하면 안 되나:
         // ApplyBufferedInputFrames는 밀린 프레임을 한 번에 몰아 적용하므로
         // clientSimTick이 한 FixedUpdate에 여러 칸 점프할 수 있다. 그 상태에서
         // tick T의 원격 해시를 현재(T+n) 월드와 비교하면 정상인데도 불일치가 난다.
         // 그래서 각 tick을 시뮬레이션한 "그 순간"의 해시를 남겨 두고 tick으로 맞춰 본다.
-        std::map<uint64_t, uint64_t> m_localHashByTick;
+        //
+        // 분해표 하나는 (풀 수 × 16바이트) 남짓이라 128 tick을 들고 있어도 작다. 월드 자체를
+        // tick마다 들고 있는 것(버린 대안, partial-resync.md §3.2)과는 규모가 다르다.
+        std::map<uint64_t, WorldHashBreakdown> m_hashByTick;
         std::vector<ComponentTypeDescriptor> m_remoteTypes;
     };
 

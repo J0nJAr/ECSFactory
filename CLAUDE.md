@@ -210,7 +210,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 - 클라이언트는 타입마다 `World::RegisterSnapshotComponent<T>()`로 명시 등록해야 한다(trivially-copyable을 static_assert). `ApplySnapshot`은 레지스트리를 처음부터 재구성하고, `hash`/`size`/`alignment`/`isTrivial`/바이트 수가 안 맞는 타입은 **거부**한다.
 - 스냅샷은 **조인과 resync 전용**이다 — 매 tick 상태 스트리밍이 아니다(아래 lockstep 참조).
 - `ComponentSnapshot.entities`에는 `EntityIndex`만 실리고 **version은 실리지 않는다.** 따라서 컴포넌트가 `EntityId`로 다른 엔티티를 참조하면 왕복에서 살아남지 못한다. 복제되는 링크는 안정적인 도메인 id(현재는 `clientId`)로 걸어야 한다.
-- `World::ComputeHash()`(`EntityManager` 상태 + trivial 풀에 대한 FNV-1a)가 결정론 체크섬이고, `TickHash` 비교 → `ResyncRequest`를 구동한다. 풀 순회는 **`TypeInfo::hash` 오름차순**이다 — 프로세스 로컬인 `index` 순서로 돌면 타입 첫 사용 순서가 다른 두 프로세스가 같은 월드에서 다른 해시를 낸다. `RegisterPresentationComponent<T>()`로 등록된 클라 전용 표현 컴포넌트는 해시에서 빠진다. 엔티티 할당은 뺄 방법이 없으므로 **어떤 peer도 월드 엔티티를 확정 경로 밖에서 만들거나 지우면 안 된다**(N4.1).
+- `World::ComputeHash()`가 결정론 체크섬이다. 실제 계산은 `ComputeHashBreakdown()`이 층별로 한다 — `EntityManager` 상태 해시, trivial 풀마다의 해시, 그리고 그 둘에서 **유도한** 월드 해시(계산 경로는 하나뿐이다. 부분 resync가 풀 단위로 비교하기 위한 구조, [partial-resync.md](docs/design/partial-resync.md)). 월드 해시가 `TickHash` 비교 → `ResyncRequest`를 구동한다. 풀 순회는 **`TypeInfo::hash` 오름차순**이다 — 프로세스 로컬인 `index` 순서로 돌면 타입 첫 사용 순서가 다른 두 프로세스가 같은 월드에서 다른 해시를 낸다. `RegisterPresentationComponent<T>()`로 등록된 클라 전용 표현 컴포넌트는 해시에서 빠진다. 엔티티 할당은 뺄 방법이 없으므로 **어떤 peer도 월드 엔티티를 확정 경로 밖에서 만들거나 지우면 안 된다**(N4.1).
 
 ## 결정론 입력 lockstep
 

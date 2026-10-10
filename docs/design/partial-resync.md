@@ -1,7 +1,7 @@
 # 부분 resync — 바뀐 풀만 보내고, 안 되면 전체 스냅샷
 
 > 대상 독자: 이 작업을 **이어서 구현할 에이전트/개발자**.
-> 상태: **설계 확정. N4.1 완료, N4.2 다음.** 마일스톤 표는 아래 §7.
+> 상태: **설계 확정. N4.1·N4.2 완료, N4.3 다음.** 마일스톤 표는 아래 §7.
 > 관련 문서: [deterministic-input-lockstep.md](deterministic-input-lockstep.md)(lockstep 전체),
 > [network-sync-system.md](network-sync-system.md)("delta snapshot은 별도 과제"로 남겨 둔 자리),
 > [roadmap.md §9](roadmap.md) 의 N4(대규모 월드 비용).
@@ -153,6 +153,6 @@ resync 요청이 서버에 닿을 때 서버는 tick `S`를 처리 중이고, �
 | 기호 | 무엇 | 상태 |
 |---|---|---|
 | N4.1 | `ComputeHash()`에 `EntityManager` 상태를 넣는다 | ✅ |
-| N4.2 | 해시 분해표(엔티티·풀별·월드) + 양쪽 tick별 기록. 월드 해시를 분해표에서 유도 | · |
+| N4.2 | 해시 분해표(엔티티·풀별·월드) + 양쪽 tick별 기록. 월드 해시를 분해표에서 유도 | ✅ |
 | N4.3 | `ResyncRequest`에 분해표, 서버가 다른 풀을 골라 `PartialSnapshot` 송신. `kReliabilityVersion` 3 | · |
 | N4.4 | 클라가 `X`에서 갈아끼우고 즉시 검증, 실패 시 전체 폴백. 주입 테스트 둘 | · |

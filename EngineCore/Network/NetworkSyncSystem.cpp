@@ -13,10 +13,10 @@ namespace EF {
         constexpr uint64_t kInputDelayTicks = 2;
         constexpr uint32_t kInputRedundancySends = 3;
 
-        // tick별 로컬 해시를 몇 개까지 들고 있을지.
+        // tick별 해시 분해표를 몇 개까지 들고 있을지(서버·클라 공통).
         // 50Hz 기준 128 tick ≈ 2.5초로, 입력 지연(2 tick) + 왕복 지연 + 재전송(4 tick 간격)을
         // 다 합쳐도 한참 남는 창이다. 이보다 오래 밀린 TickHash는 비교해봐야 의미가 없다.
-        constexpr std::size_t kLocalHashHistoryTicks = 128;
+        constexpr std::size_t kHashHistoryTicks = 128;
 
         // 접속 순서대로 플레이어를 x축에 늘어놓을 때의 간격(월드 유닛).
         //
@@ -126,7 +126,9 @@ namespace EF {
         const std::vector<InputCommand> confirmed = network.ConfirmInputs(tick);
         ApplyConfirmedInputs(world, confirmed);
 
-        const uint64_t worldHash = world.ComputeHash();
+        // 이 tick의 입력을 적용한 직후의 분해표를 기록한다. 클라도 같은 tick 의미로 기록하므로
+        // (ApplyBufferedInputFrames), 부분 resync가 tick T의 두 표를 풀 단위로 비교할 수 있다.
+        const uint64_t worldHash = RecordHash(world, tick).worldHash;
         for (const auto& [clientId, state] : network.Clients()) {
             static_cast<void>(clientId);
             if (state.endpoint.IsValid()) {
@@ -280,18 +282,23 @@ namespace EF {
             // 이 tick을 시뮬레이션한 "그 순간"의 해시를 남긴다.
             // 루프가 여러 프레임을 몰아 적용할 수 있으므로, 나중에 현재 해시를 다시
             // 계산하면 어느 tick의 상태인지 알 수 없게 된다.
-            RecordLocalHash(world, m_clientSimTick);
+            RecordHash(world, m_clientSimTick);
         }
     }
 
-    void NetworkSyncSystem::RecordLocalHash(World& world, uint64_t tick) {
-        m_localHashByTick[tick] = world.ComputeHash();
+    const WorldHashBreakdown& NetworkSyncSystem::RecordHash(World& world, uint64_t tick) {
+        WorldHashBreakdown& recorded = m_hashByTick[tick];
+        recorded = world.ComputeHashBreakdown();
 
         // 무한히 쌓이지 않게 자른다. TickHash는 서버가 매 tick 보내고 클라는 입력 지연 +
         // RTT만큼 뒤처지므로, 이 창보다 오래 밀린 해시는 어차피 비교 가치가 없다.
-        while (m_localHashByTick.size() > kLocalHashHistoryTicks) {
-            m_localHashByTick.erase(m_localHashByTick.begin());
+        // 서버 쪽에서는 이 창이 곧 "부분 resync를 받아 줄 수 있는 과거의 한계"다.
+        // (std::map 노드는 다른 항목을 지워도 옮겨지지 않으므로 recorded 참조는 유효하다.
+        //  방금 넣은 tick이 가장 오래된 항목이 되는 경우만 예외인데, tick은 단조 증가라 그럴 일이 없다.)
+        while (m_hashByTick.size() > kHashHistoryTicks) {
+            m_hashByTick.erase(m_hashByTick.begin());
         }
+        return recorded;
     }
 
     void NetworkSyncSystem::VerifyPendingTickHashes(NetworkManager& network) {
@@ -311,15 +318,15 @@ namespace EF {
             // ⚠️ 반드시 "그 tick의" 로컬 해시와 비교한다. world.ComputeHash()를 여기서
             //    부르면 현재(= clientSimTick) 상태가 나오는데, 프레임이 몰아서 적용되면
             //    tick != clientSimTick 이라 정상 상태를 불일치로 판정한다.
-            auto localIt = m_localHashByTick.find(tick);
-            if (localIt == m_localHashByTick.end()) {
+            auto localIt = m_hashByTick.find(tick);
+            if (localIt == m_hashByTick.end()) {
                 // 기록이 잘려 나갔거나 애초에 시뮬레이션한 적 없는 tick이다.
                 // 판정할 근거가 없으므로 조용히 버린다 — 추측으로 디싱크를 선언하지 않는다.
                 it = m_pendingTickHashes.erase(it);
                 continue;
             }
 
-            const uint64_t localHash = localIt->second;
+            const uint64_t localHash = localIt->second.worldHash;
             if (localHash != remoteHash) {
                 m_hasHashMismatch = true;
 
@@ -392,8 +399,8 @@ namespace EF {
 
                 // 스냅샷은 월드를 통째로 갈아끼운다. 이전 해시 기록은 지금 월드와 무관하므로
                 // 버리고, 스냅샷 tick의 해시를 새 기준선으로 남긴다.
-                m_localHashByTick.clear();
-                RecordLocalHash(world, m_clientSimTick);
+                m_hashByTick.clear();
+                RecordHash(world, m_clientSimTick);
 
                 // 스냅샷보다 오래된 TickHash는 판정 근거가 사라졌다.
                 m_pendingTickHashes.erase(m_pendingTickHashes.begin(),
@@ -425,7 +432,7 @@ namespace EF {
                     // 넘칠 때 "가장 새 것"을 버리는 이유: 검증은 오래된 tick부터 순서대로
                     // 소비된다. 구멍이 재전송으로 메워지면 클라는 버퍼된 프레임을 따라
                     // 앞에서부터 따라잡으므로, 가까운 미래의 해시가 먼 미래의 것보다 쓸모 있다.
-                    while (m_pendingTickHashes.size() > kLocalHashHistoryTicks) {
+                    while (m_pendingTickHashes.size() > kHashHistoryTicks) {
                         m_pendingTickHashes.erase(std::prev(m_pendingTickHashes.end()));
                     }
                 }

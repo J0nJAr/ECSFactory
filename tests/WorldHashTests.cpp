@@ -148,3 +148,113 @@ TEST_CASE(WorldHash, SameAllocationHistoryKeepsHashEqual) {
 
     EXPECT_EQ(makeWorld().ComputeHash(), makeWorld().ComputeHash());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// N4.2 — 해시 분해표 (엔티티·풀별·월드). 부분 resync가 "어느 풀이 어긋났나"를 고르는 근거다.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+    // 분해표에서 type에 해당하는 풀 해시를 찾는다. 없으면 0.
+    uint64_t PoolHashOf(const EF::WorldHashBreakdown& breakdown, EF::TypeHash type) {
+        for (const EF::PoolHash& pool : breakdown.pools) {
+            if (pool.type == type) {
+                return pool.hash;
+            }
+        }
+        return 0;
+    }
+
+    struct PresentationOnly {
+        uint32_t color;
+    };
+}
+
+// 계산 경로가 하나라는 불변식: ComputeHash()는 분해표의 worldHash와 같아야 한다.
+TEST_CASE(WorldHash, BreakdownWorldHashMatchesComputeHash) {
+    EF::World world;
+    const EF::EntityId entity = world.CreateEntity();
+    world.AddComponent<AlphaAsServer>(entity, AlphaAsServer{ 11 });
+    world.AddComponent<BetaAsServer>(entity, BetaAsServer{ 22 });
+
+    EXPECT_EQ(world.ComputeHashBreakdown().worldHash, world.ComputeHash());
+}
+
+// 분해표의 풀 목록은 TypeHash 오름차순이고, 타입 첫 사용 순서와 무관하다.
+// (TypeFirstUseOrderDoesNotChangeHash와 같은 장치로 index 순서를 뒤집는다.)
+TEST_CASE(WorldHash, BreakdownPoolsAreSortedAndIndependentOfFirstUseOrder) {
+    EF::World server;
+    const EF::EntityId serverEntity = server.CreateEntity();
+    server.AddComponent<AlphaAsServer>(serverEntity, AlphaAsServer{ 7 });
+    server.AddComponent<BetaAsServer>(serverEntity, BetaAsServer{ 9 });
+
+    EF::World client;
+    const EF::EntityId clientEntity = client.CreateEntity();
+    client.AddComponent<BetaAsClient>(clientEntity, BetaAsClient{ 9 });
+    client.AddComponent<AlphaAsClient>(clientEntity, AlphaAsClient{ 7 });
+
+    const EF::WorldHashBreakdown a = server.ComputeHashBreakdown();
+    const EF::WorldHashBreakdown b = client.ComputeHashBreakdown();
+
+    EXPECT_EQ(a.pools.size(), std::size_t{ 2 });
+    EXPECT_EQ(b.pools.size(), std::size_t{ 2 });
+    EXPECT_TRUE(a.pools[0].type < a.pools[1].type);
+    for (std::size_t i = 0; i < a.pools.size() && i < b.pools.size(); ++i) {
+        EXPECT_EQ(a.pools[i].type, b.pools[i].type);
+        EXPECT_EQ(a.pools[i].hash, b.pools[i].hash);
+    }
+    EXPECT_EQ(a.worldHash, b.worldHash);
+}
+
+// 풀 하나의 값만 다르면 그 풀의 해시만 달라진다 — 엔티티 해시와 다른 풀 해시는 그대로.
+// 이게 깨지면(예: 풀끼리 누산기를 공유) 부분 resync가 멀쩡한 풀까지 보내게 된다.
+TEST_CASE(WorldHash, ChangingOnePoolChangesOnlyThatPoolHash) {
+    auto makeWorld = [](uint32_t betaValue) {
+        EF::World world;
+        const EF::EntityId entity = world.CreateEntity();
+        world.AddComponent<AlphaAsServer>(entity, AlphaAsServer{ 1 });
+        world.AddComponent<BetaAsServer>(entity, BetaAsServer{ betaValue });
+        return world;
+    };
+
+    const EF::WorldHashBreakdown original = makeWorld(2).ComputeHashBreakdown();
+    const EF::WorldHashBreakdown changed = makeWorld(3).ComputeHashBreakdown();
+
+    const EF::TypeHash alpha = EF::GetTypeInfo<AlphaAsServer>().hash;
+    const EF::TypeHash beta = EF::GetTypeInfo<BetaAsServer>().hash;
+
+    EXPECT_EQ(original.entityHash, changed.entityHash);
+    EXPECT_EQ(PoolHashOf(original, alpha), PoolHashOf(changed, alpha));
+    EXPECT_TRUE(PoolHashOf(original, beta) != PoolHashOf(changed, beta));
+    EXPECT_TRUE(original.worldHash != changed.worldHash);
+}
+
+// 엔티티 할당만 다르면 엔티티 해시만 달라진다(풀 해시는 그대로).
+TEST_CASE(WorldHash, EntityChurnChangesOnlyEntityHash) {
+    EF::World plain;
+    const EF::EntityId plainEntity = plain.CreateEntity();
+    plain.AddComponent<AlphaAsServer>(plainEntity, AlphaAsServer{ 5 });
+
+    EF::World churned;
+    const EF::EntityId churnedEntity = churned.CreateEntity();
+    churned.DestroyEntity(churned.CreateEntity());
+    churned.AddComponent<AlphaAsServer>(churnedEntity, AlphaAsServer{ 5 });
+
+    const EF::WorldHashBreakdown a = plain.ComputeHashBreakdown();
+    const EF::WorldHashBreakdown b = churned.ComputeHashBreakdown();
+
+    const EF::TypeHash alpha = EF::GetTypeInfo<AlphaAsServer>().hash;
+    EXPECT_TRUE(a.entityHash != b.entityHash);
+    EXPECT_EQ(PoolHashOf(a, alpha), PoolHashOf(b, alpha));
+}
+
+// 표현 전용 컴포넌트는 분해표에도 나타나지 않는다(서버에 없는 풀이라 넣으면 영원히 "다름").
+TEST_CASE(WorldHash, BreakdownSkipsPresentationComponents) {
+    EF::World world;
+    world.RegisterPresentationComponent<PresentationOnly>();
+    const EF::EntityId entity = world.CreateEntity();
+    world.AddComponent<AlphaAsServer>(entity, AlphaAsServer{ 1 });
+    world.AddComponent<PresentationOnly>(entity, PresentationOnly{ 0xFF00FFu });
+
+    const EF::WorldHashBreakdown breakdown = world.ComputeHashBreakdown();
+    EXPECT_EQ(breakdown.pools.size(), std::size_t{ 1 });
+    EXPECT_EQ(PoolHashOf(breakdown, EF::GetTypeInfo<PresentationOnly>().hash), uint64_t{ 0 });
+}
