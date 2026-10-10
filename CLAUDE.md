@@ -52,10 +52,14 @@ ECSFactory는 **서버 권위형 멀티플레이 + 결정론적 시뮬레이션*
 툴체인은 **MSYS2의 MinGW g++**(`C:/msys64/ucrt64/bin/g++.exe`)이고, CMake 프리셋(`MinGW Makefiles` 제너레이터)으로 돌린다. 루트 `CMakeLists.txt`에 MSVC 분기가 있지만 기본 프리셋은 g++를 쓰므로, 실제로 켜져 있는 경고 세트는 `-Wall -Wextra`다.
 
 ```powershell
-cmake --preset default          # 구성 (x64-debug 상속). 그 외: x64-debug, x64-release
+cmake --preset default          # 구성 (x64-debug 상속). 그 외: x64-debug, x64-release, msvc-debug, msvc-release
 cmake --build --preset default  # 전체 빌드 → out/build/default/bin
 ctest --preset default          # 전체 테스트 (실패 시 출력 표시)
 ```
+
+**기준 툴체인은 g++다.** Visual Studio 2022 MSVC용 `msvc-debug`/`msvc-release` 프리셋은 디버거를 쓰기 위한 **보조 경로이고 CI가 검증하지 않는다** — 쓰기 전에 `msvc-debug` 테스트를 직접 돌리고, 깨져 있으면 고치되 g++ 경로를 막는 결함으로 취급하지 않는다. 근거는 [development-tools.md](docs/reference/development-tools.md)의 "기준 툴체인은 g++, MSVC는 보조" 절. MSVC 프리셋과 함께 개발 런처(`Launch-ECSFactory.cmd`, `tools/Start-DevLauncher.ps1`), VS Code 태스크·디버그 구성도 있다. 프리셋 표와 준비물은 [docs/reference/development-tools.md](docs/reference/development-tools.md)가 정본이다.
+
+> ⚠️ **MSVC와 g++는 같은 `Fixed64` 결과를 내야 한다.** 어느 컴파일러로 빌드해도 같은 시뮬레이션이어야 테스트·재현 결과를 서로 비교할 수 있다. 단, 서로 다른 컴파일러로 빌드한 서버·클라가 **한 세션에 섞이는 것은 보장하지 않는다** — 스냅샷이 trivial 컴포넌트의 메모리 배치를 그대로 싣고, 타입 이름 추출이 컴파일러별 경로(`__FUNCSIG__`/`__PRETTY_FUNCTION__`)라 두 컴파일러의 타입 해시가 같다는 보장이 없기 때문이다(실제로 다른지는 확인하지 않았다). 한 세션은 같은 프리셋으로 돌린다. [Math/Internal.hpp](EngineCore/Math/Internal.hpp)의 128비트 곱은 음수 소수부를 GCC의 산술 시프트처럼 **-∞ 방향으로 내리고**(0 방향 절삭이면 MSVC만 갈라진다), `_udiv128`에는 몫 overflow 예외를 피하려고 `high % divisor`를 넘긴다. 이 경로를 고칠 때는 두 컴파일러로 수학 테스트를 모두 돌린다.
 
 실행 파일은 `out/build/<preset>/bin/`에 떨어진다(`EngineCoreTests.exe`, `GameClient.exe`, `GameServer.exe`).
 
