@@ -15,13 +15,8 @@ namespace EF {
 
     class Logger {
     public:
-        // Initialize once during program startup.
-        static void Init(const std::string& fileName = "engine.log") {
-            Get().m_fileStream.open(fileName, std::ios::out | std::ios::app);
-            if (Get().m_fileStream.is_open()) {
-                Log(LogLevel::Info, "--- Logger Initialized (File: {}) ---", fileName);
-            }
-        }
+        // 시작 시 한 번 호출한다. 파일과 Windows 콘솔에 UTF-8 로그를 출력한다.
+        static void Init(const std::string& fileName = "engine.log");
 
         template<typename... Args>
         static void Log(LogLevel level, std::string_view fmt, Args&&... args) {

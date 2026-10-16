@@ -8,6 +8,7 @@ namespace EF {
 
     namespace {
         constexpr double kMicrosecondsToSeconds = 1.0 / 1000000.0;
+        constexpr uint64_t kMicrosecondsPerSecond = 1000000;
     }
 
     GameEngine::GameEngine(GameEngineConfig config)
@@ -196,9 +197,9 @@ namespace EF {
             return;
         }
 
-        const Fixed64 fixedDeltaTime = Fixed64::FromDouble(
-            static_cast<double>(m_fixedTimeStepUs) * kMicrosecondsToSeconds
-        );
+        const uint64_t rawDeltaTime =
+            (m_fixedTimeStepUs * static_cast<uint64_t>(Fixed64::Scale)) / kMicrosecondsPerSecond;
+        const Fixed64 fixedDeltaTime = Fixed64::FromRaw(static_cast<int64_t>(rawDeltaTime));
 
         while (m_accumulatedTimeUs >= m_fixedTimeStepUs) {
             ManualStepFixed(fixedDeltaTime);

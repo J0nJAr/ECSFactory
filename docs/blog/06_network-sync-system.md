@@ -2,7 +2,7 @@
 
 지난 글에서는 `INetworkConnection`, `PacketWriter/Reader`, 그리고 `NetworkManager`를 만들었다. 이제 서버와 클라이언트는 바이트를 규칙 있게 주고받을 수 있다.
 
-그런데 여기서 끝이 아니다. 패킷을 보낼 수 있다는 것과, **게임 월드가 매 tick 어떤 순서로 동기화되는지**는 다른 문제다.
+그런데 그것으로 끝나지는 않는다. 패킷을 보낼 수 있다는 것과, **게임 월드가 매 tick 어떤 순서로 동기화되는지**는 다른 문제다.
 
 예를 들어 클라이언트가 서버에 접속하면 실제로는 이런 질문들이 생긴다.
 
@@ -23,6 +23,8 @@
 5. **hash mismatch를 복구하는 resync 루프**
 
 아래는 이 기능들을 왜 추가했고, 어디에 구현했는지에 대한 기록이다.
+
+> 2026-07-09 업데이트: 이 글은 `NetworkSyncSystem`을 처음 도입한 06 단계의 기록이다. 이후 결정론 입력 lockstep을 만들면서 서버 입력 저장소는 `pendingInputs`/sequence 큐에서 tick별 슬롯(`inputByTick`) + `ConfirmInputs(tick)` 확정 모델로 바뀌었고, 서버는 확정된 입력셋을 `InputFrame`으로 모든 클라이언트에 reliable 릴레이한다. 그 최종 형태는 8편에서 다룬다.
 
 ---
 
@@ -48,7 +50,7 @@ network.TryReceivePacket();
 
 즉 `NetworkManager`는 **패킷 도구**이고, `NetworkSyncSystem`은 **월드에 붙는 동기화 상태 머신**이다.
 
-수신 패킷을 나누는 함수 이름도 이 기준을 따랐다. `HandlePacketOnClient`는 클라이언트 모드 시스템에서 받은 패킷을 처리한다는 뜻이고, `HandlePacketOnServer`는 서버 모드 시스템에서 받은 패킷을 처리한다는 뜻이다. 여기서 client/server는 패킷의 소유자가 아니라, 패킷을 처리하는 월드의 역할을 가리킨다.
+수신 패킷을 나누는 함수 이름도 이 기준을 따랐다. `HandlePacketOnClient`는 클라이언트 모드 시스템에서 받은 패킷을 처리한다는 뜻이고, `HandlePacketOnServer`는 서버 모드 시스템에서 받은 패킷을 처리한다는 뜻이다. 여기서 client/server는 패킷을 처리하는 월드의 역할을 가리킨다. 패킷의 소유자를 뜻하지 않는다.
 
 ---
 
@@ -240,7 +242,17 @@ sequenceDiagram
     CS->>C: ApplySnapshot
 ```
 
-왜 `TypeTable`이 먼저 필요할까? snapshot은 raw byte 덩어리다. 클라이언트가 그 byte를 `Transform`으로 복원해도 되는지 확인하려면 타입의 `hash`, `size`, `alignment`, `isTrivial` 정보가 필요하다.
+snapshot은 raw byte 덩어리다. 클라이언트가 그 byte를 `Transform`으로 복원해도 되는지 확인하려면 타입의 `hash`, `size`, `alignment`, `isTrivial` 정보가 필요하다.
+
+그런데 **그 정보는 snapshot 안에 같이 실려 온다.** `ComponentSnapshot`은 바이트 배열만 들고 있는 게 아니라, 자기가 무슨 타입인지를 적은 `ComponentTypeDescriptor`를 함께 들고 있다.
+
+```cpp
+struct ComponentSnapshot {
+    ComponentTypeDescriptor type;      // {hash, size, alignment, isTrivial}
+    std::vector<EntityIndex> entities;
+    std::vector<std::byte> bytes;
+};
+```
 
 클라이언트 월드는 적용 가능한 component를 미리 등록한다.
 
@@ -249,7 +261,28 @@ world.RegisterSnapshotComponent<Transform>();
 world.RegisterSnapshotComponent<Velocity>();
 ```
 
-이건 새로 만든 기능이 아니라 기존 `World`의 snapshot 적용 등록 기능이다. 이번 작업에서는 실제 앱의 client/server world 생성 시 이 등록을 붙였다. 그래야 테스트뿐 아니라 런타임에서도 snapshot이 적용된다.
+이건 기존 `World`에 이미 있던 snapshot 적용 등록 기능이다. 이번 작업에서는 실제 앱의 client/server world 생성 시 이 등록을 붙였다. 그래야 테스트뿐 아니라 런타임에서도 snapshot이 적용된다.
+
+검사는 이 등록이 타입마다 심어 둔 applier 안에서 벌어진다. `ApplySnapshot`은 descriptor의 `hash`로 로컬 applier를 찾고(못 찾으면 그 타입은 조용히 건너뛴다. 등록이 곧 화이트리스트다), 찾았으면 **같이 온 descriptor 대 내가 컴파일한 `T`** 를 대조한다.
+
+```cpp
+const TypeInfo& localType = GetTypeInfo<T>();
+if (snapshot.type.hash != localType.hash ||
+    snapshot.type.size != localType.size ||
+    snapshot.type.alignment != localType.alignment ||
+    !snapshot.type.isTrivial) {
+    return false;   // 이 snapshot 전체가 거부된다
+}
+if (snapshot.bytes.size() != snapshot.entities.size() * sizeof(T)) {
+    return false;   // 개수 × 크기도 맞아야 한다
+}
+```
+
+> **그럼 별도 `TypeTable` 패킷은 왜 있나 (코드로 확인한 사실만).**
+> `TypeTable`을 받은 클라이언트는 그 내용을 `m_remoteTypes`에 디코드해 두고 `m_hasTypeTable = true`를 세운다. 그런데 **`m_remoteTypes`는 그 뒤 어디에서도 읽히지 않는다.** 실제 효과는 플래그 하나뿐이고, 그 플래그가 하는 일은 `Welcome`과 함께 **snapshot 요청을 열어 주는 관문** 역할이다. `WorldSnapshot` 구조체 안에도 `typeTable` 필드가 있어 와이어에 실려 오지만, `ApplySnapshot()`은 이 필드도 한 번도 읽지 않는다.
+> 정리하면 지금의 `TypeTable`은 **핸드셰이크 순서를 만드는 장치**이지 *타입 호환성을 미리 검증하는 장치는 아니다*. 스키마 검사를 붙인다면(예: 클라가 모르는 타입이 서버에 있을 때 snapshot을 받기 전에 접속을 거절) 그 자리는 여기가 되겠지만, 그건 아직 코드에 없다.
+
+descriptor를 snapshot에 같이 실은 구조에는 장점이 있다. 검증에 필요한 정보가 검증할 데이터와 *같은 메시지 안에* 들어 있으므로, 앞선 패킷이 유실됐는지 순서가 바뀌었는지와 무관하게 판정이 성립한다.
 
 초기 동기화가 끝나면 클라이언트 월드의 hash와 서버 월드의 hash가 같아진다.
 
@@ -257,7 +290,7 @@ world.RegisterSnapshotComponent<Velocity>();
 
 ## 한 tick 안에서 벌어지는 일
 
-네트워크 동기화는 `FrameUpdate`가 아니라 `FixedUpdate`에서 처리한다. 렌더 프레임은 60Hz일 수도, 144Hz일 수도 있지만, 시뮬레이션과 입력은 fixed tick에 묶여야 하기 때문이다.
+네트워크 동기화는 `FixedUpdate`에서 처리한다. 렌더 프레임은 60Hz일 수도, 144Hz일 수도 있지만, 시뮬레이션과 입력은 fixed tick에 묶여야 하기 때문이다.
 
 클라이언트 tick은 대략 이렇다.
 
@@ -290,17 +323,19 @@ Server FixedUpdate
 
 ## 입력은 서버 tick에 맞춰 소비한다
 
-클라이언트 입력은 이런 식으로 큐에 들어간다. 테스트 코드에서는 `RegisterSystem`이 돌려준 참조를 `clientSync`라는 지역 변수로 받지만, 실제 `GameClient`에서는 같은 포인터를 `m_clientSync` 멤버에 저장해 둔다.
+클라이언트 입력은 `NetworkSyncSystem::QueueLocalInput()`으로 큐에 들어간다.
 
 ```cpp
-if (m_clientSync) {
-    m_clientSync->QueueLocalInput(InputCommand{
-        .buttonMask = buttonMask,
-        .aimYaw = yaw,
-        .aimPitch = pitch
-    });
-}
+clientSync.QueueLocalInput(InputCommand{
+    .buttonMask = 0b101,
+    .aimYaw = Fixed64::FromInt(10),
+    .aimPitch = Fixed64::FromInt(20)
+});
 ```
+
+> **다만 이 시점에 실제로 이걸 부르는 곳은 테스트밖에 없다.** 배선의 모양 자체는 처음부터 이렇게 가려고 정해 둔 것이다. `GameClient`는 `RegisterSystem`이 돌려준 클라 sync 시스템을 `m_clientSync` 포인터로 들고 있고, 나중에 `InputManager`가 읽은 실제 키보드·마우스 입력이 `m_clientSync->QueueLocalInput(...)`으로 흘러 들어갈 자리가 바로 거기다.
+>
+> 문제는 이번 단계의 `GameClient` 구현이 아직 **임시**라는 것이다. `OnRun()`은 로그 한 줄을 찍고 즉시 반환한다 — 엔진 루프조차 돌지 않으니 그 호출이 들어갈 자리도 아직 비어 있다. 그래서 지금 파이프의 양 끝을 실제로 이어 검증하는 건 `tests/NetworkTests.cpp`이고, 위 코드도 테스트가 하는 그대로다. 이번 글의 상태를 한 줄로 쓰면 **"파이프의 양 끝 API와 배선 모양이 정해졌고, 테스트가 그 사이를 직접 이어 검증한다"** 다. "입력이 흐르는 파이프가 완성됐다"까지는 아직 못 갔다. 설계가 먼저 정해지고 실제 배선은 나중에 오는, 흔한 순서다.
 
 다음 fixed tick에서 `NetworkSyncSystem`이 빈 값을 채운다.
 
@@ -355,6 +390,8 @@ TickHash{
     .worldHash = world.ComputeHash()
 }
 ```
+
+여기서 "월드 hash"라는 이름에 속으면 안 된다. `ComputeHash()`가 실제로 훑는 것은 **trivially-copyable component pool뿐**이다. 각 pool의 `type.hash`·`type.size`, dense entity index 목록, 그리고 raw byte를 FNV-1a로 섞는다. 그래서 **entity의 version·free list·next index도, component가 하나도 없는 entity도 hash에 안 들어간다.** 즉 "hash가 같다 = 두 월드가 완전히 같다"가 아니라, "hash가 같다 = 두 월드의 trivial component 내용이 같다"까지가 이 값이 보증하는 전부다. 지금 단계에서는 시뮬레이션 도중 spawn/despawn을 하지 않아 이 틈이 드러나지 않는다.
 
 클라이언트는 자기 월드 hash와 비교한다.
 
@@ -426,7 +463,14 @@ Client:
 
 ## UDP는 아직 완성형이 아니다
 
-이번에 `UDPConnection::Receive()`는 마지막으로 받은 sender 주소를 peer로 저장하도록 보강했다. 그래야 dedicated server가 client에게 답장을 보낼 수 있다.
+이번에 `UDPConnection::Receive()`는 마지막으로 받은 sender 주소를 peer로 저장하도록 보강했다. 실제로 추가된 건 두 줄이다.
+
+```cpp
+m_peerAddress = fromAddress;
+m_isConnected = true;
+```
+
+`Send()`가 `m_isConnected`를 검사하고 `m_peerAddress`로 `sendto`를 하기 때문에 둘 다 필요하다. `Connect()`를 부른 적 없는 dedicated server 쪽은 이 두 줄이 있어야 비로소 client에게 답장을 보낼 수 있다.
 
 하지만 이건 아직 단일 peer 수준이다.
 
@@ -450,9 +494,9 @@ client address -> NetworkClientState / send target
 - delta snapshot
 - prediction / rollback
 
-이번 글의 범위는 거기까지가 아니라, **동기화 루프의 뼈대를 닫는 것**이다.
+이번 글의 범위는 거기까지 가지 않는다. 여기서 닫으려는 것은 **동기화 루프의 뼈대**다.
 
-> 이 한계들 중 **다중 peer 라우팅 · 신뢰성(ack/재전송) · 순서 · 조각화/재조립**은 다음 글([07_reliable-udp-transport](07_reliable-udp-transport.md))에서 전송 계층을 다시 세워 닫는다. `delta snapshot`과 `prediction/rollback`은 전송이 아니라 게임플레이 계층 주제라 그 이후로 미룬다.
+> 이 한계들 중 **다중 peer 라우팅 · 신뢰성(ack/재전송) · 순서 · 조각화/재조립**은 다음 글([07_reliable-udp-transport](07_reliable-udp-transport.md))에서 전송 계층을 다시 세워 닫는다. `delta snapshot`과 `prediction/rollback`은 전송 계층보다 게임플레이 계층에 속하는 주제라 그 이후로 미룬다.
 
 ---
 

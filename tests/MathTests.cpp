@@ -1,5 +1,6 @@
 #include "Math/Math.hpp"
 #include "TestHarness.hpp"
+#include <limits>
 
 namespace {
     // 사인/제곱근 등 근사 함수의 정밀도는 Q16 테이블 기준이므로,
@@ -77,6 +78,21 @@ TEST_CASE(Math, SqrtMatchesPerfectSquares) {
         EF::Math::Sqrt(EF::Fixed64::FromInt(2)),
         EF::Fixed64::FromDouble(1.41421356237),
         EF::Fixed64::FromRaw(4 * kQ16ToScale)));
+}
+
+// 고정 raw 정답으로 MSVC/GCC가 같은 경계값과 음수 반올림을 만드는지 확인한다.
+TEST_CASE(Math, Fixed64CompilerParityAtRoundingBoundaries) {
+    const auto half = EF::Fixed64::FromRaw(EF::Fixed64::Scale / 2);
+    EXPECT_EQ((EF::Fixed64::FromRaw(-1) * half).Raw(), -1);
+    EXPECT_EQ((EF::Fixed64::FromRaw(-3) * half).Raw(), -2);
+    EXPECT_EQ((EF::Fixed64::FromRaw(3) * half).Raw(), 1);
+    EXPECT_EQ((EF::Fixed64::FromRaw(-3) / EF::Fixed64::FromInt(2)).Raw(), -1);
+    EXPECT_EQ(EF::Internal::DivideUnsigned128By64(7, 5, 7), uint64_t{0});
+    if constexpr (EF::Fixed64::FractionalBits == 32) {
+        EXPECT_EQ(EF::Math::Sqrt(EF::Fixed64::FromRaw(1)).Raw(), 65536);
+        EXPECT_EQ(EF::Math::Sqrt(EF::Fixed64::FromRaw(EF::Fixed64::Scale - 1)).Raw(), 4294967295LL);
+        EXPECT_EQ(EF::Math::Sqrt(EF::Fixed64::FromRaw(std::numeric_limits<int64_t>::max())).Raw(), 199032864766430LL);
+    }
 }
 
 TEST_CASE(Math, IntegrateAngularVelocityLocalProducesExpectedYaw) {

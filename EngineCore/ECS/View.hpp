@@ -60,7 +60,19 @@ namespace EF {
      * 구현 전략:
      * - 포함 컴포넌트 중 가장 작은 풀을 기준으로 순회를 시작한다.
      * - 내부 풀 접근과 필터링은 EntityIndex 기준으로 수행한다.
-     * - 바깥으로 노출되는 엔티티 값은 EntityId로 복원해서 전달한다.
+     *
+     * ⚠️ **두 순회가 넘겨주는 엔티티 값의 타입이 다르다.**
+     *    - `ViewIterator`(range-for)는 `ResolveEntityId`를 거쳐 **`EntityId`**(version 포함)를 준다.
+     *    - `ForEach`는 **`EntityIndex`**(version 없음)를 그대로 준다.
+     *
+     *    `EntityIndex`(uint32)는 `EntityId`(uint64)로 암묵 변환되므로, 콜백을
+     *    `[](EntityId e, ...)`로 적어도 **컴파일이 통과한다.** 그리고 version 비트가 0인
+     *    가짜 id가 만들어진다. 갓 만든 엔티티는 version이 0이라 우연히 맞아떨어지고,
+     *    파괴 후 재사용된 index에서만 틀어진다 — `Registry::AddComponent`의
+     *    `IsAlive` 단언이 그때 터진다.
+     *
+     *    그래서 `ForEach` 콜백의 첫 인자는 **반드시 `EntityIndex`로 받는다.**
+     *    `EntityId`가 필요하면 `view.ResolveEntityId(index)`로 복원할 것.
      */
     template<typename... IncludedTypes, typename... ExcludedTypes>
     requires(sizeof...(IncludedTypes) > 0)
@@ -142,7 +154,7 @@ namespace EF {
                     } 
                     else {
                         // 사용자가 인자를 이상하게 넣으면 컴파일 에러로 멱살을 잡습니다.
-                        static_assert(false, "[EF Engine Error] ForEach callback signature is invalid! "
+                        static_assert(!std::is_same_v<Func, Func>, "[EF Engine Error] ForEach callback signature is invalid! "
                                             "Expected: (EntityIndex, Components&...) OR (Components&...)");
                     }
                 }

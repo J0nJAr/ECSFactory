@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="format-detection" content="telephone=no">
+<title>[##_page_title_##]</title>
+<meta name="theme-color" content="#fbfaf8">
+<link rel="alternate" type="application/rss+xml" title="[##_title_##]" href="[##_rss_url_##]">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="stylesheet" href="./style.css">
+
+<!-- 다크/라이트 결정을 그리기 전에 끝낸다. 나중에 하면 흰 화면이 한 번 번쩍인다. -->
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('mm-theme');
+    var sys = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.dataset.theme = saved || sys;
+    document.documentElement.dataset.layout = localStorage.getItem('mm-layout') || 'paper';
+  } catch (e) {
+    document.documentElement.dataset.theme = 'light';
+    document.documentElement.dataset.layout = 'paper';
+  }
+})();
+</script>
+</head>
+
+<body id="[##_body_id_##]">
+<s_t3>
+<div class="mm">
+
+  <!-- ═══ 머리 ═══ -->
+  <header class="hd">
+    <div class="hd-in">
+      <button class="hd-burger" type="button" aria-label="메뉴 열기"><i></i><i></i><i></i></button>
+      <a class="hd-brand" href="[##_blog_link_##]">macham<em>y</em></a>
+      <nav class="hd-nav">[##_blog_menu_##]</nav>
+      <div class="hd-right">
+        <button class="hd-ico hd-search-open" type="button" aria-label="검색">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6"></circle><path d="M13.5 13.5 L18 18"></path></svg>
+        </button>
+        <span class="hd-lay">
+          <button class="hd-ico hd-lay-open" type="button" aria-label="레이아웃 전환">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1"></rect><path d="M2.5 8h15M12 8v8.5"></path></svg>
+          </button>
+          <!-- 32종을 한 줄로 늘어놓으면 고를 수가 없다. 성격별로 묶는다.
+               번호는 순번이 아니라 **디자인 고유 번호**다. 목업 카탈로그와 같은 번호라
+               "목업에서 본 24번"을 여기서 그대로 찾을 수 있다. 그래서 그룹 안에서
+               번호가 건너뛰는 것이 정상이다. -->
+          <div class="hd-lay-menu" hidden>
+            <div class="lay-sec">
+              <p class="lay-grp">읽기 중심</p>
+              <button type="button" data-layout="min"><i>07</i>미니멀</button>
+              <button type="button" data-layout="doc"><i>11</i>도큐먼트</button>
+              <button type="button" data-layout="serif"><i>18</i>세리프 롱폼</button>
+              <button type="button" data-layout="margin"><i>29</i>여백 부유</button>
+              <button type="button" data-layout="note"><i>04</i>노트</button>
+              <button type="button" data-layout="cornell"><i>22</i>코넬 노트</button>
+            </div>
+            <div class="lay-sec">
+              <p class="lay-grp">목록 훑기</p>
+              <button type="button" data-layout="grid"><i>05</i>카드 격자</button>
+              <button type="button" data-layout="idx"><i>19</i>컴팩트 인덱스</button>
+              <button type="button" data-layout="news"><i>06</i>신문</button>
+              <button type="button" data-layout="scan"><i>31</i>횡단 독해</button>
+              <button type="button" data-layout="focus"><i>32</i>초점 탐색</button>
+              <button type="button" data-layout="card"><i>08</i>인덱스 카드</button>
+              <button type="button" data-layout="pin"><i>23</i>핀보드</button>
+            </div>
+            <div class="lay-sec">
+              <p class="lay-grp">개발 기록</p>
+              <button type="button" data-layout="paper"><i>01</i>계측 도면</button>
+              <button type="button" data-layout="term"><i>03</i>터미널</button>
+              <button type="button" data-layout="termlt"><i>21</i>터미널 라이트</button>
+              <button type="button" data-layout="dark"><i>14</i>다크 프로</button>
+              <button type="button" data-layout="graph"><i>16</i>그리드지</button>
+              <button type="button" data-layout="bleed"><i>30</i>코드 돌출</button>
+              <button type="button" data-layout="qa"><i>28</i>문답 장부</button>
+            </div>
+            <div class="lay-sec">
+              <p class="lay-grp">편집 디자인</p>
+              <button type="button" data-layout="mag"><i>02</i>매거진</button>
+              <button type="button" data-layout="edit"><i>24</i>에디토리얼</button>
+              <button type="button" data-layout="bigone"><i>20</i>커버</button>
+              <button type="button" data-layout="brut"><i>09</i>브루탈</button>
+              <button type="button" data-layout="soft"><i>17</i>소프트</button>
+              <button type="button" data-layout="sticky"><i>12</i>포스트잇</button>
+              <button type="button" data-layout="hl"><i>13</i>하이라이트</button>
+            </div>
+            <div class="lay-sec">
+              <p class="lay-grp">시간과 구조</p>
+              <button type="button" data-layout="time"><i>10</i>타임라인</button>
+              <button type="button" data-layout="vlabel"><i>26</i>세로 표찰</button>
+              <button type="button" data-layout="split"><i>25</i>분할 판독</button>
+              <button type="button" data-layout="fold"><i>27</i>접힌 모서리</button>
+              <button type="button" data-layout="rail"><i>15</i>좌측 고정</button>
+            </div>
+          </div>
+        </span>
+        <button class="hd-ico hd-theme" type="button" aria-label="테마 전환">
+          <svg class="i-sun" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="4"></circle><path d="M10 1v2M10 17v2M1 10h2M17 10h2M3.9 3.9l1.4 1.4M14.7 14.7l1.4 1.4M16.1 3.9l-1.4 1.4M5.3 14.7l-1.4 1.4"></path></svg>
+          <svg class="i-moon" viewBox="0 0 20 20" aria-hidden="true"><path d="M17 12.3A7.5 7.5 0 0 1 7.7 3a7.5 7.5 0 1 0 9.3 9.3z"></path></svg>
+        </button>
+      </div>
+    </div>
+    <div class="hd-progress"><i></i></div>
+  </header>
+
+  <!-- 검색: 머리에서 펼쳐진다 -->
+  <div class="srch" hidden>
+    <form class="srch-in" method="get" action="[##_blog_link_##]search" data-search>
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6"></circle><path d="M13.5 13.5 L18 18"></path></svg>
+      <input type="text" name="search" placeholder="글 검색" aria-label="글 검색">
+      <button type="button" class="srch-close" aria-label="검색 닫기">닫기</button>
+    </form>
+  </div>
+
+  <!-- 모바일 서랍 -->
+  <div class="drw" hidden>
+    <div class="drw-dim"></div>
+    <div class="drw-pn">
+      <div class="drw-me">
+        <span class="ava"><img src="[##_image_##]" alt=""></span>
+        <span><b>[##_title_##]</b><i>[##_count_total_##]편</i></span>
+      </div>
+      <div class="drw-cats">[##_category_list_##]</div>
+      <div class="drw-links"><a href="[##_blog_link_##]guestbook">방명록</a><a href="[##_blog_link_##]tag">태그</a></div>
+    </div>
+  </div>
+
+  <div class="bd">
+
+  <!-- ═══ 커버(홈) ═══ -->
+  <s_cover_group>
+    <s_cover_rep>
+      <section class="cover">
+        <h2 class="cover-t">[##_cover_title_##]</h2>
+        <div class="cover-list">
+          <s_cover_item>
+            <a class="cv" href="[##_cover_item_url_##]">
+              <s_cover_item_thumbnail><span class="cv-th" style="background-image:url('[##_cover_item_thumbnail_##]')"></span></s_cover_item_thumbnail>
+              <span class="cv-cat" data-cat="[##_cover_item_category_##]">[##_cover_item_category_##]</span>
+              <strong class="cv-ti">[##_cover_item_title_##]</strong>
+              <span class="cv-su">[##_cover_item_summary_##]</span>
+              <s_cover_item_article_info><span class="cv-mt">[##_cover_item_simple_date_##] · 댓글 [##_cover_item_comment_count_##]</span></s_cover_item_article_info>
+            </a>
+          </s_cover_item>
+        </div>
+        <s_cover_url><a class="cover-more" href="[##_cover_url_##]">더 보기</a></s_cover_url>
+      </section>
+    </s_cover_rep>
+  </s_cover_group>
+
+  <div class="wrap">
+  <div class="cols">
+  <main class="main">
+
+    <!-- ═══ 목록 ═══ -->
+    <s_list>
+      <div class="lst-head" data-head>
+        <h2 class="lst-where">[##_list_conform_##]</h2>
+        <p class="lst-desc">[##_list_description_##]</p>
+        <span class="lst-cnt">[##_list_count_##]</span>
+      </div>
+      <ul class="lst">
+        <s_list_rep>
+          <li class="lst-i">
+            <span class="lst-when">[##_list_rep_regdate_##]</span>
+            <div class="lst-b">
+              <a class="lst-cat" href="[##_list_rep_category_link_##]" data-cat="[##_list_rep_category_##]">
+                <i class="dot"></i>[##_list_rep_category_##]
+              </a>
+              <h3 class="lst-t"><a href="[##_list_rep_link_##]">[##_list_rep_title_##]</a></h3>
+              <p class="lst-s">[##_list_rep_summary_##]</p>
+              <s_rp_count><span class="lst-rp" data-rp>댓글 [##_list_rep_rp_cnt_##]</span></s_rp_count>
+            </div>
+            <s_list_rep_thumbnail>
+              <a class="lst-th" href="[##_list_rep_link_##]" style="background-image:url('[##_list_rep_thumbnail_url_##]')" aria-hidden="true"></a>
+            </s_list_rep_thumbnail>
+          </li>
+        </s_list_rep>
+        <s_list_empty>
+          <li class="empty"><b>0</b><p>글이 없습니다.</p></li>
+        </s_list_empty>
+      </ul>
+    </s_list>
+
+    <!-- ═══ 공지 ═══ -->
+    <s_notice_rep>
+      <s_index_article_rep>
+        <article class="ntc">
+          <a href="[##_notice_rep_link_##]">
+            <span class="ntc-badge">공지</span>
+            <h3>[##_notice_rep_title_##]</h3>
+            <p>[##_notice_rep_summary_##]</p>
+            <span class="ntc-mt">[##_notice_rep_simple_date_##]</span>
+          </a>
+        </article>
+      </s_index_article_rep>
+    </s_notice_rep>
+
+    <!-- ═══ 글 ═══ -->
+    <s_article_rep>
+      <s_permalink_article_rep>
+        <article class="art">
+          <div class="art-rail" aria-hidden="true"></div>
+
+          <div class="art-main">
+            <header class="art-hd">
+              <a class="art-cat" href="[##_article_rep_category_link_##]" data-cat="[##_article_rep_category_##]"><i class="dot"></i>[##_article_rep_category_##]</a>
+              <h1 class="art-t">[##_article_rep_title_##]</h1>
+              <div class="art-mt">
+                <span>[##_article_rep_date_##]</span>
+                <span class="art-read"></span>
+                <span class="art-chars"></span>
+              </div>
+            </header>
+
+            <s_article_rep_thumbnail><span class="art-th" style="background-image:url('[##_article_rep_thumbnail_url_##]')"></span></s_article_rep_thumbnail>
+
+            <div class="art-body">[##_article_rep_desc_##]</div>
+
+            <s_tag_label>
+              <div class="art-tags">[##_tag_label_rep_##]</div>
+            </s_tag_label>
+
+            <s_ad_div><div class="art-admin">[##_article_dissolve_##]</div></s_ad_div>
+
+            <nav class="art-ser">
+              <s_article_prev><a class="p" href="[##_article_prev_link_##]"><small>이전 글</small><strong>[##_article_prev_title_##]</strong></a></s_article_prev>
+              <s_article_next><a class="n" href="[##_article_next_link_##]"><small>다음 글</small><strong>[##_article_next_title_##]</strong></a></s_article_next>
+            </nav>
+
+            <s_article_related>
+              <section class="rel">
+                <h4>관련 글</h4>
+                <ul>
+                  <s_article_related_rep>
+                    <li>
+                      <a href="[##_article_related_rep_link_##]">
+                        <s_article_related_rep_thumbnail><span class="rel-th" style="background-image:url('[##_article_related_rep_thumbnail_link_##]')"></span></s_article_related_rep_thumbnail>
+                        <strong>[##_article_related_rep_title_##]</strong>
+                        <time>[##_article_related_rep_date_##]</time>
+                      </a>
+                    </li>
+                  </s_article_related_rep>
+                </ul>
+              </section>
+            </s_article_related>
+
+            <s_rp>
+              <section class="cmt">[##_comment_group_##]</section>
+            </s_rp>
+          </div>
+
+          <aside class="art-toc" hidden>
+            <h5>목차</h5>
+            <ol></ol>
+            <div class="toc-prog"><i></i></div>
+            <p class="toc-pct"></p>
+          </aside>
+        </article>
+      </s_permalink_article_rep>
+    </s_article_rep>
+
+    <!-- ═══ 보호글 ═══ -->
+    <s_article_protected>
+      <div class="prot">
+        <h2>보호되어 있는 글입니다</h2>
+        <p>비밀번호를 입력하면 볼 수 있습니다.</p>
+        [##_article_password_##]
+      </div>
+    </s_article_protected>
+
+    <!-- ═══ 페이지 ═══ -->
+    <s_page_rep>
+      <article class="art">
+        <div class="art-main">
+          <div class="art-body">[##_article_rep_desc_##]</div>
+        </div>
+      </article>
+    </s_page_rep>
+
+    <!-- ═══ 태그 ═══ -->
+    <s_tag>
+      <section class="tagpage">
+        <h2 class="pg-t">태그</h2>
+        <div class="tagcloud">
+          <s_tag_rep><a href="[##_tag_link_##]" class="[##_tag_class_##]">[##_tag_name_##]</a></s_tag_rep>
+        </div>
+      </section>
+    </s_tag>
+
+    <!-- ═══ 방명록 ═══ -->
+    <s_guest>
+      <section class="gb">
+        <h2 class="pg-t">방명록</h2>
+        [##_guestbook_group_##]
+      </section>
+    </s_guest>
+
+    <!-- ═══ 지도 ═══ -->
+    <s_local>
+      <section class="local">
+        <div class="local-spot"><s_local_spot_rep>[##_local_spot_##]</s_local_spot_rep></div>
+        <ul class="local-list"><s_local_info_rep><li><a href="[##_local_info_link_##]">[##_local_info_title_##]</a></li></s_local_info_rep></ul>
+      </section>
+    </s_local>
+
+    <!-- ═══ 페이지 넘김 ═══ -->
+    <s_paging>
+      <nav class="pg">
+        [##_prev_page_##]
+        <s_paging_rep><a href="[##_paging_rep_link_##]" class="pg-n">[##_paging_rep_link_num_##]</a></s_paging_rep>
+        [##_next_page_##]
+      </nav>
+    </s_paging>
+
+  </main>
+
+  <!-- ═══ 사이드 ═══ -->
+  <aside class="side">
+    <div class="side-me">
+      <span class="ava"><img src="[##_image_##]" alt=""></span>
+      <div>
+        <b>[##_title_##]</b>
+        <p>[##_desc_##]</p>
+        [##_subscription_button_##]
+      </div>
+    </div>
+
+    <s_sidebar>
+      <s_sidebar_element>
+        <div class="side-el">[##_category_list_##]</div>
+      </s_sidebar_element>
+    </s_sidebar>
+
+    <div class="side-el">
+      <h5>최근 글</h5>
+      <ul class="side-recent">
+        <s_rctps_rep>
+          <li><a href="[##_rctps_rep_link_##]"><span>[##_rctps_rep_title_##]</span><time>[##_rctps_rep_date_##]</time></a></li>
+        </s_rctps_rep>
+      </ul>
+    </div>
+
+    <div class="side-el">
+      <h5>태그</h5>
+      <div class="tagcloud sm"><s_random_tags><a href="[##_tag_link_##]">[##_tag_name_##]</a></s_random_tags></div>
+    </div>
+
+    <div class="side-el side-stat">
+      <span>전체 <b>[##_count_total_##]</b></span>
+      <span>오늘 <b>[##_count_today_##]</b></span>
+      <span>어제 <b>[##_count_yesterday_##]</b></span>
+    </div>
+  </aside>
+
+  </div>
+  </div>
+  </div>
+
+  <footer class="ft">
+    <div class="ft-in">
+      <span class="ft-brand">macham<em>y</em></span>
+      <span class="ft-c">[##_var_footerCopyright_##]</span>
+      <a class="ft-top" href="#" aria-label="맨 위로">↑</a>
+    </div>
+  </footer>
+
+</div>
+
+<!-- 목차 시트(모바일) -->
+<div class="sheet" hidden>
+  <div class="sheet-dim"></div>
+  <div class="sheet-pn"><span class="grab"></span><h5>목차</h5><ol></ol></div>
+</div>
+<button class="toc-fab" type="button" hidden aria-label="목차 열기">목차</button>
+
+<!-- ═══ mermaid ═══ -->
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+// 티스토리는 mermaid 블록에 전용 클래스를 안 붙인다.
+// highlight.js 가 내용을 보고 언어를 추측해 pre 태그의 class 에 박기 때문에
+// mermaid 블록에도 routeros / abnf 같은 엉뚱한 이름이 붙는다.
+// 그래서 블록의 첫 줄이 다이어그램 선언인지로 판별한다.
+// flowchart / graph 는 방향 토큰까지 봐야 graph.AddNode() 같은 코드가 안 걸린다.
+const HEAD = /^((flowchart|graph)\s+(TB|TD|BT|RL|LR)\b|(sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|zenuml|kanban)\b|(sankey|xychart|block|packet|architecture|radar|treemap)-beta\b)/;
+
+const dark = document.documentElement.dataset.theme === 'dark';
+mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'default', securityLevel: 'loose' });
+
+const nodes = [];
+document.querySelectorAll('.art-body pre').forEach((pre) => {
+  const src = (pre.innerText || pre.textContent || '').trim();
+  if (!HEAD.test(src)) return;
+  const holder = document.createElement('pre');
+  holder.className = 'mermaid';
+  holder.textContent = src;
+  pre.replaceWith(holder);
+  nodes.push(holder);
+});
+if (nodes.length) {
+  try { await mermaid.run({ nodes }); }
+  catch (e) { console.error('[mermaid]', e); }
+}
+</script>
+
+<!-- ═══ 스킨 동작 ═══ -->
+<script>
+(function () {
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return [].slice.call((r || document).querySelectorAll(s)); };
+
+  /* 1. 카테고리 색.
+     티스토리는 카테고리를 이름 문자열로만 준다. 이름을 색에 대응시켜
+     목록에서 글 종류가 한눈에 갈리게 한다. 못 찾은 이름은 회색으로 둔다. */
+  var CAT = [
+    [/알고리즘|백준|BOJ|대회|PS/i, 'algo'],
+    [/ECS|엔진|C\+\+/i,           'ecs'],
+    [/유니티|Unity/i,             'unity'],
+    [/간단|스니펫|코드/i,          'snip'],
+    [/일상|회고|잡담/i,            'life']
+  ];
+  $$('[data-cat]').forEach(function (el) {
+    var name = el.getAttribute('data-cat') || el.textContent || '';
+    for (var i = 0; i < CAT.length; i++) {
+      if (CAT[i][0].test(name)) { el.setAttribute('data-tone', CAT[i][1]); return; }
+    }
+    el.setAttribute('data-tone', 'none');
+  });
+
+  /* 2. 테마 전환 */
+  var themeBtn = $('.hd-theme');
+  if (themeBtn) themeBtn.addEventListener('click', function () {
+    var next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('mm-theme', next); } catch (e) {}
+    var mc = document.querySelector('meta[name="theme-color"]');
+    if (mc) mc.setAttribute('content', next === 'dark' ? '#17161b' : '#fbfaf8');
+  });
+
+  /* 2-b. 레이아웃 전환.
+     같은 마크업 위에 CSS 프리셋만 갈아끼운다. 고른 값은 브라우저에 남겨
+     다음 방문에도 그대로 열린다. */
+  var layWrap = $('.hd-lay');
+  if (layWrap) {
+    var layBtn = $('.hd-lay-open', layWrap);
+    var layMenu = $('.hd-lay-menu', layWrap);
+    var mark = function () {
+      var cur = document.documentElement.dataset.layout || 'paper';
+      $$('button[data-layout]', layMenu).forEach(function (b) {
+        b.setAttribute('aria-pressed', b.dataset.layout === cur ? 'true' : 'false');
+      });
+    };
+    mark();
+    layBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      layMenu.hidden = !layMenu.hidden;
+      mark();
+    });
+    $$('button[data-layout]', layMenu).forEach(function (b) {
+      b.addEventListener('click', function () {
+        document.documentElement.dataset.layout = b.dataset.layout;
+        try { localStorage.setItem('mm-layout', b.dataset.layout); } catch (e) {}
+        mark();
+        layMenu.hidden = true;
+      });
+    });
+    document.addEventListener('click', function () { layMenu.hidden = true; });
+  }
+
+  /* 2-c. 검색.
+     티스토리 검색은 쿼리스트링이 아니라 **경로**다. /search?search=x 는 언제나 0건이고
+     /search/x 라야 결과가 나온다. 폼 기본 동작을 막고 경로로 보낸다.
+     공식은 [##_search_onclick_submit_##] 치환자를 쓰라고 하지만, 그건 티스토리 전역 함수에
+     기대는 것이라 encodeURIComponent 를 직접 부르는 편이 안전하다. */
+  var sform = $('form[data-search]');
+  if (sform) sform.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var v = (sform.querySelector('input').value || '').trim();
+    if (v) location.href = '/search/' + encodeURIComponent(v);
+  });
+
+  /* 3. 검색 열고 닫기 */
+  var srch = $('.srch');
+  var open = $('.hd-search-open');
+  if (open && srch) {
+    open.addEventListener('click', function () {
+      srch.hidden = !srch.hidden;
+      if (!srch.hidden) { var i = $('input', srch); if (i) i.focus(); }
+    });
+    var cl = $('.srch-close', srch);
+    if (cl) cl.addEventListener('click', function () { srch.hidden = true; });
+  }
+
+  /* 4. 모바일 서랍 */
+  var drw = $('.drw');
+  var bg = $('.hd-burger');
+  if (drw && bg) {
+    bg.addEventListener('click', function () { drw.hidden = false; document.body.classList.add('lock'); });
+    $$('.drw-dim', drw).forEach(function (d) {
+      d.addEventListener('click', function () { drw.hidden = true; document.body.classList.remove('lock'); });
+    });
+  }
+
+  /* 4-b. 댓글 수가 0이면 티스토리가 숫자를 비워 보낸다. "댓글"만 덩그러니 남으므로 지운다. */
+  $$('[data-rp]').forEach(function (el) {
+    var n = (el.textContent || '').replace(/[^0-9]/g, '');
+    if (!n || n === '0') el.remove();
+  });
+
+  /* 4-c. 사이드·서랍의 카테고리 목록에도 같은 색 점을 붙인다.
+     이 목록은 티스토리가 만들어 주는 마크업이라 서버에서 손댈 수 없다. 여기서 입힌다. */
+  $$('.side-el ul a, .drw-cats a').forEach(function (a) {
+    if (a.closest('.tagcloud') || a.closest('.side-recent')) return;
+    if (a.querySelector('.dot')) return;
+    var name = (a.textContent || '').trim();
+    if (!name) return;
+    for (var i = 0; i < CAT.length; i++) {
+      if (CAT[i][0].test(name)) {
+        var d = document.createElement('i');
+        d.className = 'dot';
+        a.setAttribute('data-tone', CAT[i][1]);
+        a.insertBefore(d, a.firstChild);
+        return;
+      }
+    }
+  });
+
+  /* 4-c2. 티스토리 '새 글' 아이콘(new_ico_5.gif).
+     스타일이 없으면 제목 옆과 카테고리 옆에 주황 막대처럼 튄다.
+     지우지 않고 작은 점으로 눌러 둔다 — 새 글 표시는 쓸모가 있다. */
+  $$('img[src*="new_ico"]').forEach(function (im) {
+    var b = document.createElement('i');
+    b.className = 'newdot';
+    b.title = '새 글';
+    im.replaceWith(b);
+  });
+
+  /* 4-c3. 목록 머리줄. 카테고리 페이지에서는 설명이 비어 빈 줄만 남는다. */
+  $$('[data-head]').forEach(function (h) {
+    var d = h.querySelector('.lst-desc');
+    if (d && !(d.textContent || '').trim()) d.remove();
+  });
+
+  /* 4-d. 목록 날짜.
+     티스토리는 당일 글을 '18:13:12' 로, 지난 글을 '2026.07.09' 로 준다.
+     한 목록에 두 형식이 섞이면 자릿수가 안 맞아 지저분하다. 시각은 '오늘'로 바꾼다. */
+  $$('.lst-when').forEach(function (el) {
+    var t = (el.textContent || '').trim();
+    if (/^\d{1,2}:\d{2}/.test(t)) el.textContent = '오늘';
+    else el.textContent = t.replace(/^(\d{4})\./, '');   // 2026.07.09 → 07.09
+  });
+
+  /* 4-e. 코드 블록 복사 버튼.
+     백준 풀이는 본문의 절반 이상이 코드다(측정: 55~79%). 지금은 드래그로 긁어야 한다.
+     pre 를 감싸서 버튼을 얹는다 — 티스토리가 pre 에 붙이는 클래스와 부딪히지 않게. */
+  $$('.art-body pre').forEach(function (pre) {
+    if (pre.classList.contains('mermaid') || pre.closest('.code-wrap')) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'code-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    /* 언어 라벨은 에디터가 붙인 값이 있을 때만 보여준다.
+       highlight.js 의 자동 추측은 자주 틀린다 — 이 블로그의 C++ 블록이
+       arduino, routeros, prolog 로 태깅된 것을 확인했다. 추측을 표시하면 잘못 가르친다. */
+    var lang = pre.getAttribute('data-ke-language');
+    if (lang) {
+      var tag = document.createElement('span');
+      tag.className = 'code-lang';
+      tag.textContent = lang;
+      wrap.appendChild(tag);
+    }
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'code-copy';
+    btn.textContent = '복사';
+    btn.addEventListener('click', function () {
+      var text = pre.innerText || pre.textContent || '';
+      var done = function () {
+        btn.textContent = '복사됨';
+        setTimeout(function () { btn.textContent = '복사'; }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function(){});
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        ta.remove();
+      }
+    });
+    wrap.appendChild(btn);
+  });
+
+  /* 4-f. 본문 이미지 확대.
+     본문 폭이 720px 인데 백준 문제 지문 스크린샷은 940px 로 찍혀 있다. 눌리면 글씨가 안 읽힌다.
+     티스토리가 figure 에 원본 크기를 적어 두므로 그것을 쓴다. */
+  var box = null;
+  $$('.art-body img').forEach(function (im) {
+    var fig = im.closest('figure');
+    var ow = fig && parseInt(fig.getAttribute('data-origin-width') || '0', 10);
+    if (!(ow > 760 || im.naturalWidth > 760)) return;   // 눌리는 그림만
+    im.classList.add('zoomable');
+    im.addEventListener('click', function () {
+      if (!box) {
+        box = document.createElement('div');
+        box.className = 'imgbox';
+        box.innerHTML = '<img alt=""><button type="button" aria-label="닫기">닫기</button>';
+        box.addEventListener('click', function () { box.hidden = true; document.body.classList.remove('lock'); });
+        document.body.appendChild(box);
+      }
+      box.querySelector('img').src = im.currentSrc || im.src;
+      box.hidden = false;
+      document.body.classList.add('lock');
+    });
+  });
+
+  /* 5. 글 계량 — 글자 수와 읽는 시간.
+     한국어는 분당 500자쯤으로 잡는다. 코드 블록은 눈으로 훑는 속도가 달라 그대로 센다. */
+  var body = $('.art-body');
+  if (!body) return;
+  var text = (body.innerText || '').replace(/\s+/g, ' ').trim();
+  var chars = text.length;
+  var mins = Math.max(1, Math.round(chars / 500));
+  var c1 = $('.art-chars'), c2 = $('.art-read');
+  if (c1) c1.textContent = chars.toLocaleString() + '자';
+  if (c2) c2.textContent = '읽는 데 ' + mins + '분';
+
+  /* 6. 목차와 눈금 레일.
+     짧은 글에 목차를 달면 과하다. 소제목이 셋 이상이고 글이 충분히 길 때만 붙인다. */
+  var heads = $$('h2, h3', body).filter(function (h) { return (h.textContent || '').trim(); });
+
+  /* 제목 기반 id 를 **글 길이와 무관하게** 붙인다.
+     예전에는 'h-0','h-1' 처럼 순번을 썼는데, 연재 중간에 소제목을 하나 끼워 넣으면
+     그 글로 걸어 둔 기존 앵커가 전부 다른 절을 가리키게 된다.
+     그리고 짧은 글에도 id 가 있어야 다른 글에서 특정 절을 가리킬 수 있다. */
+  var used = {};
+  heads.forEach(function (h) {
+    if (h.id) return;
+    var slug = (h.textContent || '').trim().toLowerCase()
+      .replace(/[^\w가-힣ㄱ-ㅎㅏ-ㅣ\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/^-+|-+$/g, '')          /* 앞뒤 하이픈 정리. '# 문제' 가 '-문제' 가 되던 것 */
+      .slice(0, 40).replace(/-+$/, '') || 'sec';
+    if (used[slug]) { used[slug]++; slug += '-' + used[slug]; } else { used[slug] = 1; }
+    h.id = slug;
+
+    /* 소제목 옆 앵커. 눌러서 그 절 주소를 복사한다. */
+    var a = document.createElement('button');
+    a.type = 'button';
+    a.className = 'h-anchor';
+    a.textContent = '#';
+    a.title = '이 절 링크 복사';
+    a.addEventListener('click', function () {
+      var url = location.origin + location.pathname + '#' + h.id;
+      if (navigator.clipboard) navigator.clipboard.writeText(url).then(function () {
+        a.classList.add('done');
+        setTimeout(function () { a.classList.remove('done'); }, 1200);
+      }, function(){});
+      location.hash = h.id;
+    });
+    h.appendChild(a);
+  });
+
+  var LONG = heads.length >= 3 && chars >= 2500;
+  if (!LONG) return;
+
+  var toc = $('.art-toc'), rail = $('.art-rail'), sheet = $('.sheet'), fab = $('.toc-fab');
+  var ol = toc ? $('ol', toc) : null;
+  var sol = sheet ? $('ol', sheet) : null;
+
+  heads.forEach(function (h, i) {
+    if (!h.id) h.id = 'h-' + i;
+    var mk = function () {
+      var li = document.createElement('li');
+      li.dataset.for = h.id;
+      li.className = h.tagName === 'H3' ? 'sub' : '';
+      /* 앵커를 뺀 제목만 넣는다. `h.textContent` 를 그대로 쓰면 위에서 소제목에
+         붙인 '#' 앵커 글자가 목차 항목마다 따라 들어간다("문제부터#").
+         위의 slug 계산은 앵커를 붙이기 **전**에 돌아서 이 문제가 없다. */
+      var clone = h.cloneNode(true), anchor = clone.querySelector('.h-anchor');
+      if (anchor) anchor.parentNode.removeChild(anchor);
+      li.textContent = (clone.textContent || '').trim();
+      li.addEventListener('click', function () {
+        h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (sheet) { sheet.hidden = true; document.body.classList.remove('lock'); }
+      });
+      return li;
+    };
+    if (ol) ol.appendChild(mk());
+    if (sol) sol.appendChild(mk());
+  });
+  if (toc) toc.hidden = false;
+  if (fab) fab.hidden = false;
+
+  /* 눈금 레일: 소제목 위치를 세로선 위 눈금으로 찍는다. 장식이 아니라 위치 정보다. */
+  function drawRail() {
+    if (!rail) return;
+    rail.innerHTML = '';
+    var top = body.offsetTop, h = body.offsetHeight || 1;
+    heads.forEach(function (el, i) {
+      var y = ((el.offsetTop - top) / h) * 100;
+      if (y < 0 || y > 100) return;
+      var t = document.createElement('b');
+      t.style.top = y + '%';
+      rail.appendChild(t);
+      var n = document.createElement('u');
+      n.style.top = y + '%';
+      n.textContent = String(i + 1).padStart(2, '0');
+      rail.appendChild(n);
+    });
+  }
+  drawRail();
+  addEventListener('resize', drawRail);
+
+  /* mermaid 는 module 스크립트라 이 코드보다 **뒤에** 렌더되고, 문서 높이를 크게 바꾼다.
+     웹폰트가 늦게 뜨는 것도 같은 영향을 준다. 그래서 높이가 변하면 다시 계산한다.
+     예전에는 resize 때만 다시 그려서, 다이어그램이 많은 긴 글일수록 눈금과 진행률이
+     처음부터 어긋나 있었다. */
+  if (window.ResizeObserver) {
+    var ro = new ResizeObserver(function () { drawRail(); onScroll(); });
+    ro.observe(body);
+  }
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function () { drawRail(); onScroll(); });
+  }
+
+  /* 7. 진행률과 현재 절 */
+  var barTop = $('.hd-progress i');
+  var barToc = $('.toc-prog i');
+  var pct = $('.toc-pct');
+  function onScroll() {
+    var start = body.offsetTop;
+    var end = start + body.offsetHeight - innerHeight;
+    var p = Math.min(1, Math.max(0, (scrollY - start) / Math.max(1, end - start)));
+    if (barTop) barTop.style.width = (p * 100) + '%';
+    if (barToc) barToc.style.width = (p * 100) + '%';
+    if (pct) pct.textContent = Math.round(p * 100) + '% · ' + Math.max(0, Math.round(mins * (1 - p))) + '분 남음';
+
+    var cur = null;
+    heads.forEach(function (h) { if (h.getBoundingClientRect().top < 120) cur = h.id; });
+    $$('.art-toc li, .sheet li').forEach(function (li) {
+      li.classList.toggle('on', li.dataset.for === cur);
+    });
+  }
+  addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  /* 8. 모바일 목차 시트 */
+  if (fab && sheet) {
+    fab.addEventListener('click', function () { sheet.hidden = false; document.body.classList.add('lock'); });
+    var d = $('.sheet-dim', sheet);
+    if (d) d.addEventListener('click', function () { sheet.hidden = true; document.body.classList.remove('lock'); });
+  }
+})();
+</script>
+</s_t3>
+</body>
+</html>

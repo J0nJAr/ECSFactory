@@ -60,8 +60,11 @@ namespace {
     }
 
     [[nodiscard]] EF_FORCEINLINE EF::Fixed64 InterpolateQuarterSine(int64_t quarterAngleRaw) noexcept {
-        const __int128 scaledIndexRaw =
-            static_cast<__int128>(quarterAngleRaw) * kSinTableSegments * EF::Fixed64::Scale / kHalfPiRaw;
+        // MSVC에도 있는 64×64 → 128 연산으로 같은 정수 몫을 구한다.
+        const auto numerator = EF::Internal::MultiplyUnsigned64(
+            static_cast<uint64_t>(quarterAngleRaw), kSinTableSegments * EF::Fixed64::Scale);
+        const uint64_t scaledIndexRaw = EF::Internal::DivideUnsigned128By64(
+            numerator.high, numerator.low, kHalfPiRaw);
         const int64_t index = static_cast<int64_t>(scaledIndexRaw >> EF::Fixed64::FractionalBits);
         if (index >= kSinTableSegments) {
             return QuarterSineToFixed(kQuarterSinRaw[kSinTableSegments]);
@@ -94,16 +97,23 @@ namespace EF::Math {
             return Fixed64::Zero();
         }
 
-        const unsigned __int128 scaled = static_cast<unsigned __int128>(value.Raw()) << Fixed64::FractionalBits;
-        unsigned __int128 x = scaled;
-        unsigned __int128 y = (x + 1u) >> 1;
-
-        while (y < x) {
-            x = y;
-            y = (x + scaled / x) >> 1;
+        // floor(sqrt(raw << FractionalBits)). 곱의 두 워드를 비교하므로
+        // 컴파일러 확장 정수나 부동소수점 반올림에 의존하지 않는다.
+        const uint64_t raw = static_cast<uint64_t>(value.Raw());
+        const Internal::UInt128Parts scaled{
+            raw >> (64 - Fixed64::FractionalBits), raw << Fixed64::FractionalBits };
+        uint64_t lower = 0;
+        uint64_t upper = uint64_t{1} << ((63 + Fixed64::FractionalBits + 1) / 2);
+        while (lower + 1 < upper) {
+            const uint64_t middle = lower + (upper - lower) / 2;
+            const auto square = Internal::MultiplyUnsigned64(middle, middle);
+            if (square.high < scaled.high || (square.high == scaled.high && square.low <= scaled.low)) {
+                lower = middle;
+            } else {
+                upper = middle;
+            }
         }
-
-        return Fixed64::FromRaw(static_cast<int64_t>(x));
+        return Fixed64::FromRaw(static_cast<int64_t>(lower));
     }
 
     Fixed64 Sin(const Fixed64& radians) noexcept {

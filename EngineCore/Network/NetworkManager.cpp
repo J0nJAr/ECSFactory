@@ -1,5 +1,6 @@
 #include "NetworkManager.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <span>
 #include <utility>
@@ -10,6 +11,19 @@ namespace EF {
     namespace {
         using Writer = Network::PacketWriter;
         using Reader = Network::PacketReader;
+
+        // 와이어에서 읽은 개수로 곧장 reserve 하면 안 된다.
+        //
+        // 조작된(혹은 손상된) 4바이트 길이 접두 하나로 수 GB 예약을 유도할 수 있고,
+        // 그 자리에서 bad_alloc으로 프로세스가 죽는다. 실제 데이터가 뒤따르는지는
+        // 루프가 읽어 보기 전까지 알 수 없으므로, 예약만 남은 페이로드가 감당할 수 있는
+        // 최대치로 자른다. 개수가 진짜라면 push_back이 알아서 더 늘린다.
+        //
+        // 어떤 항목도 4바이트(u32 하나)보다 작을 수 없으므로 Remaining()/4가 안전한 상한이다.
+        // 항목 크기를 하드코딩하지 않는 이유: 와이어 포맷이 바뀌어도 이 상한은 계속 유효하다.
+        [[nodiscard]] std::size_t SafeReserveCount(uint32_t count, const Reader& reader) {
+            return std::min<std::size_t>(count, reader.Remaining() / 4);
+        }
 
         void WriteType(Writer& writer, const ComponentTypeDescriptor& type) {
             writer.U64(type.hash);
@@ -27,6 +41,24 @@ namespace EF {
             type.size = static_cast<std::size_t>(size);
             type.alignment = static_cast<std::size_t>(alignment);
             return true;
+        }
+
+        void WriteInputCommand(Writer& writer, const InputCommand& command) {
+            writer.U32(command.clientId);
+            writer.U64(command.tick);
+            writer.U32(command.sequence);
+            writer.U64(command.buttonMask);
+            writer.WriteFixed64(command.aimYaw);
+            writer.WriteFixed64(command.aimPitch);
+        }
+
+        bool ReadInputCommand(Reader& reader, InputCommand& command) {
+            return reader.U32(command.clientId) &&
+                   reader.U64(command.tick) &&
+                   reader.U32(command.sequence) &&
+                   reader.U64(command.buttonMask) &&
+                   reader.ReadFixed64(command.aimYaw) &&
+                   reader.ReadFixed64(command.aimPitch);
         }
     }
 
@@ -59,8 +91,13 @@ namespace EF {
     }
 
     NetworkClientState& NetworkManager::RegisterClient(uint32_t clientId, EntityId controlledEntity,
-                                                       const Network::Endpoint& endpoint) {
+                                                       const Network::Endpoint& endpoint,
+                                                       uint64_t heardAtTick) {
         NetworkClientState& state = GetOrCreateClient(clientId);
+
+        // 방금 Hello를 받았으니 지금이 마지막으로 들은 시각이다.
+        // 이걸 안 찍으면 0으로 남아 오래 떠 있던 서버가 신규 접속을 즉시 쫓아낸다.
+        state.lastHeardFromTick = heardAtTick;
         if (controlledEntity != kNullEntity) {
             state.controlledEntity = controlledEntity;
             state.hasControlledEntity = true;
@@ -77,47 +114,123 @@ namespace EF {
         return it == m_endpointToClient.end() ? 0 : it->second;
     }
 
-    bool NetworkManager::EnqueueInput(const InputCommand& command) {
-        NetworkClientState& state = GetOrCreateClient(command.clientId);
+    void NetworkManager::MarkClientHeardFrom(const Network::Endpoint& endpoint, uint64_t tick) {
+        const uint32_t clientId = ClientIdForEndpoint(endpoint);
+        if (clientId == 0) {
+            return;
+        }
+        auto it = m_clients.find(clientId);
+        if (it != m_clients.end()) {
+            it->second.lastHeardFromTick = tick;
+        }
+    }
 
-        // 시퀀스 기반 중복/구식 입력 폐기.
-        // 부호 있는 차이로 비교해 32비트 wraparound도 안전하게 처리한다.
-        if (state.hasInput &&
-            static_cast<int32_t>(command.sequence - state.lastInputSequence) <= 0) {
+    void NetworkManager::QueueSessionEvent(uint64_t tick, const SessionEvent& event) {
+        m_pendingSessionEvents[tick].push_back(event);
+    }
+
+    void NetworkManager::BindControlledEntity(uint32_t clientId, EntityId entity) {
+        auto it = m_clients.find(clientId);
+        if (it == m_clients.end()) {
+            return;
+        }
+        it->second.controlledEntity = entity;
+        it->second.hasControlledEntity = (entity != kNullEntity);
+    }
+
+    std::vector<SessionEvent> NetworkManager::ConfirmSessionEvents(uint64_t tick) {
+        auto it = m_pendingSessionEvents.find(tick);
+        if (it == m_pendingSessionEvents.end()) {
+            return {};
+        }
+
+        std::vector<SessionEvent> events = std::move(it->second);
+        m_pendingSessionEvents.erase(it);
+
+        // clientId 순으로 정렬한다. 이 순서가 곧 엔티티 생성 순서이고 그게 EntityId를 정한다.
+        // 같은 clientId에 Join과 Leave가 같은 tick에 겹치는 일은 없어야 하지만,
+        // 있더라도 순서가 확정되도록 kind를 두 번째 키로 쓴다.
+        std::sort(events.begin(), events.end(), [](const SessionEvent& a, const SessionEvent& b) {
+            if (a.clientId != b.clientId) {
+                return a.clientId < b.clientId;
+            }
+            return static_cast<uint8_t>(a.kind) < static_cast<uint8_t>(b.kind);
+        });
+        return events;
+    }
+
+    EntityId NetworkManager::UnregisterClient(uint32_t clientId) {
+        auto it = m_clients.find(clientId);
+        if (it == m_clients.end()) {
+            return kNullEntity;
+        }
+
+        const NetworkClientState& state = it->second;
+        const EntityId controlled = state.hasControlledEntity ? state.controlledEntity : kNullEntity;
+
+        if (state.endpoint.IsValid()) {
+            m_endpointToClient.erase(state.endpoint);
+
+            // 신뢰성 채널까지 지운다. 안 지우면 미확인 레코드가 무한히 쌓인다(헤더 주석 참조).
+            m_channels.erase(state.endpoint);
+        }
+
+        m_clients.erase(it);
+        return controlled;
+    }
+
+    bool NetworkManager::EnqueueInput(const InputCommand& command) {
+        if (command.clientId == 0) {
             return false;
         }
 
-        state.hasInput = true;
-        state.lastInputSequence = command.sequence;
+        NetworkClientState& state = GetOrCreateClient(command.clientId);
+
+        // client/tick 슬롯으로 중복을 거르고, 서버가 이미 확정한 tick은 거부한다.
+        // (확정된 과거를 뒤늦게 바꾸면 서버와 클라의 시뮬레이션이 갈라진다.)
+        if (command.tick <= state.lastConfirmedTick) {
+            return false;
+        }
+
         state.lastReceivedTick = command.tick;
-        state.pendingInputs.push_back(command);
-        return true;
+        return state.inputByTick.try_emplace(command.tick, command).second;
     }
 
-    const std::deque<InputCommand>& NetworkManager::PendingInputs(uint32_t clientId) const {
-        static const std::deque<InputCommand> kEmpty;
-        auto it = m_clients.find(clientId);
-        return it == m_clients.end() ? kEmpty : it->second.pendingInputs;
-    }
-
-    std::vector<InputCommand> NetworkManager::ConsumePendingInputs(uint32_t clientId, uint64_t upToTick) {
-        std::vector<InputCommand> consumed;
-        auto it = m_clients.find(clientId);
-        if (it == m_clients.end()) {
-            return consumed;
+    std::vector<InputCommand> NetworkManager::ConfirmInputs(uint64_t tick) {
+        std::vector<uint32_t> clientIds;
+        clientIds.reserve(m_clients.size());
+        for (const auto& [clientId, state] : m_clients) {
+            static_cast<void>(state);
+            clientIds.push_back(clientId);
         }
+        std::sort(clientIds.begin(), clientIds.end());
 
-        std::deque<InputCommand>& pending = it->second.pendingInputs;
-        for (auto inputIt = pending.begin(); inputIt != pending.end();) {
-            if (inputIt->tick <= upToTick) {
-                consumed.push_back(*inputIt);
-                inputIt = pending.erase(inputIt);
-            } else {
-                ++inputIt;
+        std::vector<InputCommand> confirmed;
+        confirmed.reserve(clientIds.size());
+        for (uint32_t clientId : clientIds) {
+            NetworkClientState& state = m_clients[clientId];
+
+            InputCommand command;
+            auto inputIt = state.inputByTick.find(tick);
+            if (inputIt != state.inputByTick.end()) {
+                command = inputIt->second;
+            } else if (state.hasConfirmed) {
+                command = state.lastConfirmed;
             }
+            command.clientId = clientId;
+            command.tick = tick;
+
+            state.lastConfirmed = command;
+            state.hasConfirmed = true;
+            state.lastConfirmedTick = tick;
+
+            auto eraseEnd = state.inputByTick.upper_bound(tick);
+            state.inputByTick.erase(state.inputByTick.begin(), eraseEnd);
+
+            confirmed.push_back(command);
         }
 
-        return consumed;
+        return confirmed;
     }
 
     Network::ReliabilityChannel::Delivery NetworkManager::DeliveryClassFor(Network::PacketType type) {
@@ -128,6 +241,8 @@ namespace EF {
             return Delivery::Sequenced;    // 최신만 의미 있음
         case PacketType::InputCommand:
             return Delivery::Unreliable;   // 손실은 다음 tick이 덮음, 앱 계층 dedup
+        case PacketType::InputFrame:
+            return Delivery::Reliable;
         default:
             return Delivery::Reliable;     // 제어/스냅샷은 반드시 도착
         }
@@ -159,6 +274,10 @@ namespace EF {
 
     bool NetworkManager::SendInputCommand(const InputCommand& command, const Network::Endpoint& target) {
         return SendPacket(Network::PacketType::InputCommand, EncodeInputCommand(command), target);
+    }
+
+    bool NetworkManager::SendInputFrame(const InputFrame& frame, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::InputFrame, EncodeInputFrame(frame), target);
     }
 
     bool NetworkManager::SendTickHash(const TickHash& tickHash, const Network::Endpoint& target) {
@@ -231,6 +350,18 @@ namespace EF {
         }
 
         while (std::optional<Network::Datagram> datagram = m_connection->ReceiveFrom()) {
+            // ⚠️ 생존 판정은 **여기서** 한다. 앱 패킷이 올라오는 자리(TryReceive)에서 하면 안 된다.
+            //
+            //    조용한 클라이언트는 앱 패킷을 전혀 보내지 않는다 — 키를 안 누르면
+            //    InputCommand가 없다. 그래도 서버가 매 tick 보내는 reliable InputFrame에
+            //    **ack는 계속 보낸다.** 그런데 ack만 든 데이터그램에는 앱 레코드가 없어서
+            //    TryReceive로 올라오지 않는다. 그래서 앱 계층에서 생존을 재면 가만히 서 있는
+            //    플레이어가 타임아웃으로 쫓겨난다(실제로 이 회귀를 냈다).
+            //
+            //    m_currentTick은 Update(tick)에서 갱신되므로 여기서는 한 tick 낡을 수 있다.
+            //    타임아웃이 250 tick 단위라 무해하다.
+            MarkClientHeardFrom(datagram->from, m_currentTick);
+
             std::vector<std::vector<uint8_t>> delivered;
             ChannelFor(datagram->from).OnReceive(datagram->bytes, delivered);
 
@@ -321,7 +452,7 @@ namespace EF {
         }
 
         outTypes.clear();
-        outTypes.reserve(count);
+        outTypes.reserve(SafeReserveCount(count, reader));
         for (uint32_t i = 0; i < count; ++i) {
             ComponentTypeDescriptor type;
             if (!ReadType(reader, type)) {
@@ -332,9 +463,35 @@ namespace EF {
         return reader.Finished();
     }
 
+    /**
+     * WorldSnapshot 와이어 포맷 (프로토콜 v2).
+     *
+     *   u64  tick
+     *   u32  nextEntityIndex          ┐
+     *   u32  versionCount             ├ EntitySnapshot (v2에서 추가)
+     *   u32  version   × versionCount │
+     *   u32  freeCount                │
+     *   u32  freeIndex × freeCount    ┘
+     *   u32  typeCount ;   type × typeCount
+     *   u32  componentCount ; (type, u32 entityCount, u32 entity ×, u32 byteCount, bytes) ×
+     *
+     * `versionCount`는 `nextEntityIndex`와 항상 같지만(EntitySnapshot 불변식) 길이 접두는
+     * 그대로 붙인다 — 다른 배열과 형태를 맞추고, 디코더가 불변식을 가정하지 않게 하기 위해서다.
+     * 불일치 검사는 `EntityManager::RestoreFrom`이 한다.
+     */
     std::vector<uint8_t> NetworkManager::EncodeWorldSnapshot(const WorldSnapshot& snapshot) {
         Writer writer;
         writer.U64(snapshot.tick);
+
+        writer.U32(snapshot.entities.nextEntityIndex);
+        writer.U32(static_cast<uint32_t>(snapshot.entities.versions.size()));
+        for (EntityVersion version : snapshot.entities.versions) {
+            writer.U32(version);
+        }
+        writer.U32(static_cast<uint32_t>(snapshot.entities.freeIndices.size()));
+        for (EntityIndex freeIndex : snapshot.entities.freeIndices) {
+            writer.U32(freeIndex);
+        }
 
         writer.U32(static_cast<uint32_t>(snapshot.typeTable.size()));
         for (const ComponentTypeDescriptor& type : snapshot.typeTable) {
@@ -359,12 +516,44 @@ namespace EF {
         Reader reader(payload);
         uint32_t typeCount = 0;
         uint32_t componentCount = 0;
-        if (!reader.U64(outSnapshot.tick) || !reader.U32(typeCount)) {
+        if (!reader.U64(outSnapshot.tick) || !reader.U32(outSnapshot.entities.nextEntityIndex)) {
+            return false;
+        }
+
+        // 길이 접두를 믿고 reserve 하지 않는다 — 4바이트 카운트 하나로 수 GB를 예약하게
+        // 만들 수 있기 때문이다. push_back으로 늘리면 페이로드가 먼저 바닥나서 false가 난다.
+        uint32_t versionCount = 0;
+        if (!reader.U32(versionCount)) {
+            return false;
+        }
+        outSnapshot.entities.versions.clear();
+        for (uint32_t i = 0; i < versionCount; ++i) {
+            uint32_t version = 0;
+            if (!reader.U32(version)) {
+                return false;
+            }
+            outSnapshot.entities.versions.push_back(version);
+        }
+
+        uint32_t freeCount = 0;
+        if (!reader.U32(freeCount)) {
+            return false;
+        }
+        outSnapshot.entities.freeIndices.clear();
+        for (uint32_t i = 0; i < freeCount; ++i) {
+            uint32_t freeIndex = 0;
+            if (!reader.U32(freeIndex)) {
+                return false;
+            }
+            outSnapshot.entities.freeIndices.push_back(freeIndex);
+        }
+
+        if (!reader.U32(typeCount)) {
             return false;
         }
 
         outSnapshot.typeTable.clear();
-        outSnapshot.typeTable.reserve(typeCount);
+        outSnapshot.typeTable.reserve(SafeReserveCount(typeCount, reader));
         for (uint32_t i = 0; i < typeCount; ++i) {
             ComponentTypeDescriptor type;
             if (!ReadType(reader, type)) {
@@ -378,7 +567,7 @@ namespace EF {
         }
 
         outSnapshot.components.clear();
-        outSnapshot.components.reserve(componentCount);
+        outSnapshot.components.reserve(SafeReserveCount(componentCount, reader));
         for (uint32_t i = 0; i < componentCount; ++i) {
             ComponentSnapshot component;
             uint32_t entityCount = 0;
@@ -387,7 +576,7 @@ namespace EF {
                 return false;
             }
 
-            component.entities.reserve(entityCount);
+            component.entities.reserve(SafeReserveCount(entityCount, reader));
             for (uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex) {
                 uint32_t entity = 0;
                 if (!reader.U32(entity)) {
@@ -407,24 +596,75 @@ namespace EF {
 
     std::vector<uint8_t> NetworkManager::EncodeInputCommand(const InputCommand& command) {
         Writer writer;
-        writer.U32(command.clientId);
-        writer.U64(command.tick);
-        writer.U32(command.sequence);
-        writer.U64(command.buttonMask);
-        writer.WriteFixed64(command.aimYaw);
-        writer.WriteFixed64(command.aimPitch);
+        WriteInputCommand(writer, command);
         return writer.Take();
     }
 
     bool NetworkManager::DecodeInputCommand(const std::vector<uint8_t>& payload, InputCommand& outCommand) {
         Reader reader(payload);
-        return reader.U32(outCommand.clientId) &&
-               reader.U64(outCommand.tick) &&
-               reader.U32(outCommand.sequence) &&
-               reader.U64(outCommand.buttonMask) &&
-               reader.ReadFixed64(outCommand.aimYaw) &&
-               reader.ReadFixed64(outCommand.aimPitch) &&
-               reader.Finished();
+        return ReadInputCommand(reader, outCommand) && reader.Finished();
+    }
+
+    std::vector<uint8_t> NetworkManager::EncodeInputFrame(const InputFrame& frame) {
+        Writer writer;
+        writer.U64(frame.tick);
+
+        // ⚠️ 세션 이벤트가 입력보다 **먼저** 나간다. 읽는 쪽도 같은 순서여야 한다.
+        //    적용 순서(events → inputs)와 맞춰 둔 것이라, 한쪽만 바꾸면 조용히 어긋난다.
+        writer.U32(static_cast<uint32_t>(frame.events.size()));
+        for (const SessionEvent& event : frame.events) {
+            writer.U8(static_cast<uint8_t>(event.kind));
+            writer.U32(event.clientId);
+        }
+
+        writer.U32(static_cast<uint32_t>(frame.inputs.size()));
+        for (const InputCommand& command : frame.inputs) {
+            WriteInputCommand(writer, command);
+        }
+        return writer.Take();
+    }
+
+    bool NetworkManager::DecodeInputFrame(const std::vector<uint8_t>& payload, InputFrame& outFrame) {
+        Reader reader(payload);
+        uint32_t eventCount = 0;
+        if (!reader.U64(outFrame.tick) || !reader.U32(eventCount)) {
+            return false;
+        }
+
+        // 세션 이벤트가 먼저다(EncodeInputFrame과 같은 순서).
+        outFrame.events.clear();
+        outFrame.events.reserve(SafeReserveCount(eventCount, reader));
+        for (uint32_t i = 0; i < eventCount; ++i) {
+            uint8_t kind = 0;
+            SessionEvent event;
+            if (!reader.U8(kind) || !reader.U32(event.clientId)) {
+                return false;
+            }
+
+            // 모르는 kind는 프레임 전체를 거부한다. 조용히 무시하면 이 peer만
+            // 그 사건을 놓친 채 계속 돌아가고, 그게 곧 디싱크다.
+            if (kind > static_cast<uint8_t>(SessionEvent::Kind::Leave)) {
+                return false;
+            }
+            event.kind = static_cast<SessionEvent::Kind>(kind);
+            outFrame.events.push_back(event);
+        }
+
+        uint32_t count = 0;
+        if (!reader.U32(count)) {
+            return false;
+        }
+
+        outFrame.inputs.clear();
+        outFrame.inputs.reserve(SafeReserveCount(count, reader));
+        for (uint32_t i = 0; i < count; ++i) {
+            InputCommand command;
+            if (!ReadInputCommand(reader, command)) {
+                return false;
+            }
+            outFrame.inputs.push_back(command);
+        }
+        return reader.Finished();
     }
 
     std::vector<uint8_t> NetworkManager::EncodeTickHash(const TickHash& tickHash) {

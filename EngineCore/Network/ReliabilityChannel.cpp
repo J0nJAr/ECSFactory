@@ -4,7 +4,19 @@
 
 namespace EF::Network {
     namespace {
-        constexpr uint8_t kReliabilityVersion = 1;
+        // 와이어 버전. **이 저장소에서 실제로 검사되는 유일한 버전이다**
+        // (Packet.hpp의 kProtocolVersion 은 선언만 있고 아무도 읽지 않는다).
+        // 불일치하면 데이터그램을 통째로 거부한다.
+        //
+        // 2로 올린 이유: InputFrame 에 세션 이벤트(Join/Leave)가 추가되어 앱 레코드의
+        // 바이트 배치가 바뀌었다(N2). 엄밀히 말하면 이건 전송 계층이 아니라 앱 계층의
+        // 변경이라 여기서 막는 게 층 구분상 맞지는 않다. 그래도 올리는 이유는,
+        // **구버전 peer가 새 프레임을 조용히 잘못 파싱하는 것보다 아예 거부하는 편이
+        // 낫기 때문이다.** 잘못 파싱하면 디싱크로 나타나고 원인 추적이 훨씬 길다.
+        //
+        // 제대로 된 자리는 Hello/Welcome handshake에서 앱 버전을 비교하는 것이다.
+        // 그게 생기면 이 상수는 진짜 전송 포맷 변경에만 쓰면 된다.
+        constexpr uint8_t kReliabilityVersion = 2;
 
         // 신뢰 채널 조각 하나에 담는 레코드 바이트 수. MTU 아래로 유지한다.
         constexpr std::size_t kFragmentSize = 1024;

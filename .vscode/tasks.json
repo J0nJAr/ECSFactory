@@ -44,6 +44,104 @@
         "CMake: Configure x64-debug"
       ],
       "problemMatcher": []
+    },
+    {
+      "label": "ECSFactory: Build default",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/tools/Invoke-Dev.ps1",
+        "-Action",
+        "Build",
+        "-Preset",
+        "default"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$gcc",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "ECSFactory: Test default",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/tools/Invoke-Dev.ps1",
+        "-Action",
+        "Test",
+        "-Preset",
+        "default"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "ECSFactory: Build msvc-debug",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/tools/Invoke-Dev.ps1",
+        "-Action",
+        "Build",
+        "-Preset",
+        "msvc-debug"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "ECSFactory: Test msvc-debug",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/tools/Invoke-Dev.ps1",
+        "-Action",
+        "Test",
+        "-Preset",
+        "msvc-debug"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "ECSFactory: Launcher",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-STA",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/tools/Start-DevLauncher.ps1"
+      ],
+      "problemMatcher": []
     }
   ],
   "inputs": [
@@ -53,6 +151,7 @@
       "description": "Choose the CMake target folder to update",
       "options": [
         "EngineCore",
+        "EngineRender",
         "GameClient",
         "GameServer",
         "tests"
