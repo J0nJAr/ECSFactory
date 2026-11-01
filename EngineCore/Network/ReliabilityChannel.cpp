@@ -21,11 +21,7 @@ namespace EF::Network {
         // 생겼다(부분 resync, N4.3). 2로 올릴 때와 같은 이유로 여기서 막는다.
         constexpr uint8_t kReliabilityVersion = 3;
 
-        // 신뢰 채널 조각 하나에 담는 레코드 바이트 수. MTU 아래로 유지한다.
-        constexpr std::size_t kFragmentSize = 1024;
-
-        // 한 데이터그램에 담는 메시지 총량 상한(대략적인 MTU 여유).
-        constexpr std::size_t kMaxDatagramPayload = 1200;
+        // kFragmentSize / kMaxDatagramPayload 등 크기 상수는 헤더에 있다(테스트와 NetworkManager가 쓴다).
 
         // 신뢰 메시지 재전송 간격(틱). ack가 안 오면 이 간격마다 다시 보낸다.
         constexpr uint64_t kResendIntervalTicks = 4;
@@ -40,7 +36,15 @@ namespace EF::Network {
         }
     }
 
-    void ReliabilityChannel::Enqueue(Delivery delivery, std::span<const uint8_t> record) {
+    bool ReliabilityChannel::Enqueue(Delivery delivery, std::span<const uint8_t> record) {
+        // 등급별 상한. 근거는 헤더의 상수 주석과 large-record-transport.md §4.1.
+        const std::size_t limit = delivery == Delivery::Reliable
+            ? kMaxReliableRecordBytes
+            : kMaxUnfragmentedRecordBytes;
+        if (record.size() > limit) {
+            return false;
+        }
+
         std::vector<uint8_t> bytes(record.begin(), record.end());
         switch (delivery) {
         case Delivery::Reliable: {
@@ -57,6 +61,7 @@ namespace EF::Network {
             m_pendingUnreliable.push_back(std::move(bytes));
             break;
         }
+        return true;
     }
 
     std::vector<std::vector<uint8_t>> ReliabilityChannel::Flush(uint64_t currentTick) {
@@ -139,7 +144,7 @@ namespace EF::Network {
             datagrams.push_back(std::move(datagram));
         };
 
-        constexpr std::size_t kHeaderSize = 1 + 4;
+        constexpr std::size_t kHeaderSize = kDatagramHeaderSize;
         PacketWriter current = startDatagram();
         std::size_t currentSize = 0;
         bool currentHasMessage = false;
@@ -207,6 +212,16 @@ namespace EF::Network {
                 }
                 if (fragmentCount == 0 || fragmentIndex >= fragmentCount) {
                     continue; // 손상
+                }
+
+                // ⚠️ 와이어 값으로 재조립 메모리를 잡기 전에 상한을 본다.
+                //  - 조각 수: 받아들이면 그 개수로 버퍼를 잡고, 같은 시퀀스의 정상 조각은
+                //    "조각 수 불일치"로 버려져 레코드가 영영 완성되지 않는다.
+                //  - 시퀀스 창: 너무 앞선 시퀀스를 받아 두면 메모리만 잡힌다. 정상 송신자는
+                //    그렇게 앞서 가지 않고, 버려도 재전송으로 다시 온다.
+                if (fragmentCount > kMaxReliableFragments ||
+                    sequence - m_expectedReliableSeq >= kMaxReassemblyWindow) {
+                    continue;
                 }
 
                 Reassembly& reassembly = m_reassembly[sequence];

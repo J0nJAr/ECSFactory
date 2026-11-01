@@ -12,6 +12,7 @@ add_executable(EngineCoreTests
     UITests.cpp
     WorldHashTests.cpp
     PartialResyncTests.cpp
+    LargeRecordTests.cpp
 )
 
 # EngineRender는 EngineCore를 PUBLIC으로 링크하므로 둘 다 딸려온다.
@@ -153,6 +154,11 @@ add_test(NAME Network.ClientAndServerRecordMatchingHashBreakdownPerTick COMMAND 
 add_test(NAME Network.PartialResyncRepairsTransformOnlyDesync COMMAND EngineCoreTests Network.PartialResyncRepairsTransformOnlyDesync)
 add_test(NAME Network.EntityAllocationDesyncFallsBackToFullSnapshot COMMAND EngineCoreTests Network.EntityAllocationDesyncFallsBackToFullSnapshot)
 add_test(NAME Network.InsufficientPartialSnapshotFallsBackToFull COMMAND EngineCoreTests Network.InsufficientPartialSnapshotFallsBackToFull)
+add_test(NAME LargeRecord.ReliableRecordCapIsEnforcedAtEnqueue COMMAND EngineCoreTests LargeRecord.ReliableRecordCapIsEnforcedAtEnqueue)
+add_test(NAME LargeRecord.UnreliableRecordMustFitOneDatagram COMMAND EngineCoreTests LargeRecord.UnreliableRecordMustFitOneDatagram)
+add_test(NAME LargeRecord.MegabyteSnapshotJoinsOverLossyLink COMMAND EngineCoreTests LargeRecord.MegabyteSnapshotJoinsOverLossyLink)
+add_test(NAME LargeRecord.ReceiverIgnoresAbsurdFragmentCount COMMAND EngineCoreTests LargeRecord.ReceiverIgnoresAbsurdFragmentCount)
+add_test(NAME LargeRecord.ReceiverIgnoresSequencesFarAheadOfWindow COMMAND EngineCoreTests LargeRecord.ReceiverIgnoresSequencesFarAheadOfWindow)
 add_test(NAME PartialResync.SelectsOnlyTheDifferingPool COMMAND EngineCoreTests PartialResync.SelectsOnlyTheDifferingPool)
 add_test(NAME PartialResync.FallsBackToFullWithoutServerRecord COMMAND EngineCoreTests PartialResync.FallsBackToFullWithoutServerRecord)
 add_test(NAME PartialResync.FallsBackToFullWhenEntityAllocationDiffers COMMAND EngineCoreTests PartialResync.FallsBackToFullWhenEntityAllocationDiffers)

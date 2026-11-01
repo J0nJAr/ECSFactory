@@ -355,7 +355,11 @@ namespace EF {
 
     bool NetworkManager::SendPacket(Network::PacketType type, const std::vector<uint8_t>& payload,
                                     const Network::Endpoint& target) {
-        if (!m_connection || payload.size() > std::numeric_limits<uint16_t>::max()) {
+        // 크기 상한은 전달 등급마다 다르고, 그걸 아는 신뢰성 채널(Enqueue)이 검사한다.
+        // 예전에는 여기서 등급과 무관하게 65535바이트로 막았다 — 그래서 1024바이트 조각으로
+        // 얼마든지 나눌 수 있는 신뢰 레코드(WorldSnapshot)도 64KB를 넘으면 조용히 버려져,
+        // 큰 월드에는 조인 자체가 안 됐다(large-record-transport.md §1).
+        if (!m_connection) {
             return false;
         }
 
@@ -370,7 +374,9 @@ namespace EF {
         record.push_back(static_cast<uint8_t>(type));
         record.insert(record.end(), payload.begin(), payload.end());
 
-        ChannelFor(destination).Enqueue(DeliveryClassFor(type), record);
+        if (!ChannelFor(destination).Enqueue(DeliveryClassFor(type), record)) {
+            return false;  // 등급 상한 초과. 큐에 넣지 않았다.
+        }
         return FlushEndpoint(destination);
     }
 

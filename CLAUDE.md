@@ -183,7 +183,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 | `Sequenced` (1) | 비신뢰, 최신만(구식은 폐기) | `TickHash` |
 | `Unreliable` (2) | 비신뢰, 전부 전달 | `InputCommand`(클라→서버. 중복 제거는 앱 계층에서) |
 
-와이어 상수는 `ReliabilityChannel.cpp` 상단에 있다: 조각 1024바이트, 데이터그램 페이로드 최대 1200바이트, 4 tick 후 재전송. 데이터그램 헤더는 `[version][누적 ack]` 뒤에 채널 메시지들이 붙는 형태다.
+와이어 크기 상수는 `ReliabilityChannel.hpp`에 있다: 조각 1024바이트, 데이터그램 페이로드 최대 1200바이트, **신뢰 레코드 상한 16MiB**(`kMaxReliableRecordBytes`), **비신뢰 레코드는 데이터그램 하나**(`kMaxUnfragmentedRecordBytes`), 수신 재조립 창 256 시퀀스. 상한 검사는 `ReliabilityChannel::Enqueue`가 하고 `SendPacket`은 결과를 돌려준다. 재전송 간격(4 tick)은 `.cpp`에 있다. ⚠️ 큰 신뢰 레코드는 아직 한 tick에 버스트로 나가고 손실 시 레코드 전체를 재전송한다 — 실제 UDP 수신 버퍼에서 꼬리가 버려질 수 있다(N4.6에서 페이싱, [large-record-transport.md](docs/design/large-record-transport.md)). 데이터그램 헤더는 `[version][누적 ack]` 뒤에 채널 메시지들이 붙는 형태다.
 
 ### 3. 프로토콜 — `NetworkManager`
 
