@@ -2,7 +2,7 @@
 
 > 대상 독자: 이 작업을 **이어서 구현할 에이전트/개발자**. 블로그(서술형)가 아니라 **왜 이렇게 하고, 어떻게 이어가는지**를 담은 실행용 스펙이다.
 > 상태: **M1~M7 완료.** (아래 "마일스톤" 참조)
-> 관련 문서: `docs/blog/07_reliable-udp-transport.md`(전송 계층), `docs/blog/06_network-sync-system.md`(동기화 상태머신). 이 문서는 그 위에 올라가는 **입력/시뮬레이션 계층**을 다룬다.
+> 관련 문서: [네트워크 동기화 설계](network-sync-system.md). 이 문서는 전송·동기화 계층 위에 올라가는 **입력/시뮬레이션 계층**을 다룬다.
 
 ---
 
@@ -138,9 +138,8 @@
 - 대표 테스트: `Network.LockstepConvergesTwoClientsOverLossyReorderingLink`.
 
 ### M7 — 문서 ✅ 완료
-- `docs/blog/08_deterministic-input-lockstep.md` 신설(서술형: 왜 lockstep, 흐름, 호출구조, 07과의 관계).
-- `07` 채널표와 설명은 `InputFrame → Reliable` M2 구현 완료 상태를 반영함.
-- 이 설계 문서(본 파일)도 구현 완료분에 맞춰 갱신.
+- 이 설계 문서와 [네트워크 동기화 설계](network-sync-system.md)를 구현 완료분에 맞춰 갱신.
+- `InputFrame → Reliable` M2 구현 완료 상태를 반영함.
 
 ### M8 — 디싱크 탐지·복구 경로 테스트 ✅ 완료
 - **동기**: `TickHash` 불일치 → `ResyncRequest` → `WorldSnapshot` 복구 경로는 정상 세션에서 한 번도 실행되지 않는다. M6의 수렴 테스트들은 전부 "디싱크가 안 난다"를 확인할 뿐, "디싱크가 났을 때 복구된다"는 아무도 확인하지 않았다.

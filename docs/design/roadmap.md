@@ -401,7 +401,7 @@ World::ApplySnapshot()      → Registry newRegistry;   ← 완전히 새 Regist
 
 #### 남은 것
 
-- **`ComputeHash()`에 `EntityManager` 상태 넣기.** N2가 끝났으므로 이제 넣을 수 있다. 넣으면 엔티티 할당이 갈라지는 것을 바로 잡는다.
+- **`ComputeHash()`에 `EntityManager` 상태 넣기.** N2가 끝났으므로 이제 넣을 수 있다. 넣으면 엔티티 할당이 갈라지는 것을 바로 잡는다. ✅ **N4.1에서 완료**([partial-resync.md](partial-resync.md)).
 - **`Dormant`(파괴 대신 얼리기).** 지금은 나갔다 들어오면 새 `clientId` + 새 캐릭터다. 세션 / 영속 플레이어 / 캐릭터를 분리하는 [§8](deterministic-input-lockstep.md) 작업과 함께 한다.
 
 ---
@@ -493,7 +493,7 @@ World::ApplySnapshot()      → Registry newRegistry;   ← 완전히 새 Regist
 |---|---|---|
 | **G6~** 조립기·레시피 | 재료 A+B→C 변환, 생산 체인 | 벨트가 돌아야 레시피가 의미를 가진다 |
 | **N3** 예측/롤백 | 클라 로컬 예측 + 서버 확정과 어긋나면 재시뮬 | 공장 장르는 FPS만큼 입력 지연이 아프지 않다. **정말 필요한지부터 재고** 넣는다 |
-| **N4** 대규모 월드 비용 | 영역별 해시, 스냅샷 분할, 관심 영역(AoI) | 엔티티가 수천을 넘을 때. 전체 해시가 매 tick 비싸진다 |
+| **N4** 대규모 월드 비용 | 영역별 해시, 스냅샷 분할, 관심 영역(AoI). **첫 조각인 부분 resync(N4.1~N4.4)는 앞당겨 완료.** 다음 조각은 64KB 페이로드 한계를 넘는 스냅샷 분할 전송 — [partial-resync.md](partial-resync.md) | 엔티티가 수천을 넘을 때. 전체 해시가 매 tick 비싸진다 |
 | **R9** 텍스처·스프라이트 | 컬러 쿼드 → 스프라이트 아틀라스 | 게임이 성립한 뒤. 그전에는 색만으로 충분하다 |
 | **S1** 세이브(영속) | 스냅샷을 디스크로. 매치 범위 vs 계정 범위 2층 | `CreateSnapshot`이 이미 월드 직렬화기라 자연 확장이다. [deterministic-input-lockstep.md §8](deterministic-input-lockstep.md) |
 | **R10** 3D 전환 | ortho 카메라 → perspective, 쿼드 → 메시 | 2D로 결승선을 통과한 뒤. `IRenderer`가 이미 `Mat4`를 받으므로 백엔드 교체가 아니라 카메라 교체다 |

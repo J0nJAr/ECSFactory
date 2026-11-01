@@ -13,10 +13,10 @@ namespace EF {
         constexpr uint64_t kInputDelayTicks = 2;
         constexpr uint32_t kInputRedundancySends = 3;
 
-        // tick별 로컬 해시를 몇 개까지 들고 있을지.
+        // tick별 해시 분해표를 몇 개까지 들고 있을지(서버·클라 공통).
         // 50Hz 기준 128 tick ≈ 2.5초로, 입력 지연(2 tick) + 왕복 지연 + 재전송(4 tick 간격)을
         // 다 합쳐도 한참 남는 창이다. 이보다 오래 밀린 TickHash는 비교해봐야 의미가 없다.
-        constexpr std::size_t kLocalHashHistoryTicks = 128;
+        constexpr std::size_t kHashHistoryTicks = 128;
 
         // 접속 순서대로 플레이어를 x축에 늘어놓을 때의 간격(월드 유닛).
         //
@@ -24,6 +24,30 @@ namespace EF {
         // "6 tick(50Hz에서 약 0.12초) 동안 한 방향으로 밀어야 옆 사람 자리에 닿는" 거리다.
         // 스폰 직후 서로 겹쳐 보이지 않을 만큼은 떨어져 있고, 화면 밖으로 나갈 만큼
 
+    }
+
+    std::optional<std::vector<TypeHash>> SelectPoolsForPartialResync(
+        const WorldHashBreakdown& client, const WorldHashBreakdown* server) {
+        if (server == nullptr || client.entityHash != server->entityHash ||
+            client.pools.size() != server->pools.size()) {
+            return std::nullopt;
+        }
+
+        // 두 목록 모두 TypeHash 오름차순이므로(WorldHashBreakdown 불변식) 같은 자리끼리 비교한다.
+        std::vector<TypeHash> differing;
+        for (std::size_t i = 0; i < client.pools.size(); ++i) {
+            if (client.pools[i].type != server->pools[i].type) {
+                return std::nullopt;  // 풀 집합이 다르다
+            }
+            if (client.pools[i].hash != server->pools[i].hash) {
+                differing.push_back(client.pools[i].type);
+            }
+        }
+
+        if (differing.empty()) {
+            return std::nullopt;
+        }
+        return differing;
     }
 
     NetworkSyncSystem::NetworkSyncSystem(NetworkSyncMode mode)
@@ -126,7 +150,9 @@ namespace EF {
         const std::vector<InputCommand> confirmed = network.ConfirmInputs(tick);
         ApplyConfirmedInputs(world, confirmed);
 
-        const uint64_t worldHash = world.ComputeHash();
+        // 이 tick의 입력을 적용한 직후의 분해표를 기록한다. 클라도 같은 tick 의미로 기록하므로
+        // (ApplyBufferedInputFrames), 부분 resync가 tick T의 두 표를 풀 단위로 비교할 수 있다.
+        const uint64_t worldHash = RecordHash(world, tick).worldHash;
         for (const auto& [clientId, state] : network.Clients()) {
             static_cast<void>(clientId);
             if (state.endpoint.IsValid()) {
@@ -251,12 +277,15 @@ namespace EF {
     }
 
     void NetworkSyncSystem::ApplyBufferedInputFrames(World& world, NetworkManager& network) {
-        static_cast<void>(network);
         if (!m_hasSnapshot) {
             return;
         }
 
         for (;;) {
+            // 부분 스냅샷이 "지금 tick"의 것이면 다음 프레임을 적용하기 **전에** 끼운다.
+            // 다음 프레임까지 적용해 버리면 X를 지나쳐서 끼울 기회를 잃는다.
+            TryApplyPendingPartialSnapshot(world, network);
+
             const uint64_t nextTick = m_clientSimTick + 1;
             auto frameIt = m_frameBuffer.find(nextTick);
             if (frameIt == m_frameBuffer.end()) {
@@ -280,18 +309,63 @@ namespace EF {
             // 이 tick을 시뮬레이션한 "그 순간"의 해시를 남긴다.
             // 루프가 여러 프레임을 몰아 적용할 수 있으므로, 나중에 현재 해시를 다시
             // 계산하면 어느 tick의 상태인지 알 수 없게 된다.
-            RecordLocalHash(world, m_clientSimTick);
+            RecordHash(world, m_clientSimTick);
         }
     }
 
-    void NetworkSyncSystem::RecordLocalHash(World& world, uint64_t tick) {
-        m_localHashByTick[tick] = world.ComputeHash();
+    void NetworkSyncSystem::TryApplyPendingPartialSnapshot(World& world, NetworkManager& network) {
+        if (!m_pendingPartialSnapshot || m_pendingPartialSnapshot->tick != m_clientSimTick) {
+            return;
+        }
+
+        const PartialSnapshot partial = std::move(*m_pendingPartialSnapshot);
+        m_pendingPartialSnapshot.reset();
+
+        // 갈아끼운 **직후** 서버의 X 시점 월드 해시와 비교한다. 다음 TickHash를 기다리지 않는다.
+        // 어긋남은 번진다 — T에서 X까지 망가진 풀로 시뮬레이션하는 동안 다른 풀까지 망가졌을
+        // 수 있고, 서버가 T 기준으로 고른 풀만으로는 부족할 수 있다(partial-resync.md §4.4).
+        //
+        // ⚠️ ApplyPartialSnapshot이 false면 월드는 그대로다(전부 아니면 전무). 하지만 true인데
+        //    해시가 안 맞으면 풀은 이미 바뀐 상태다. 그래도 괜찮다 — 곧 전체 스냅샷이 월드를
+        //    통째로 덮는다. 그때까지 HasHashMismatch()는 계속 켜져 있다.
+        if (!world.ApplyPartialSnapshot(partial) || world.ComputeHash() != partial.worldHash) {
+            FallBackToFullSnapshot(network);
+            return;
+        }
+
+        ++m_appliedPartialSnapshotCount;
+        m_hasHashMismatch = false;
+        m_resyncRequestInFlight = false;
+
+        // 이 tick의 기록을 고친 월드로 다시 쓰고, 그보다 오래된 기록은 버린다 — 망가진 풀로
+        // 시뮬레이션한 결과라 늦게 도착한 TickHash와 비교하면 허위 불일치가 난다. 기록이 없는
+        // tick의 TickHash는 VerifyPendingTickHashes가 "근거 없음"으로 조용히 버린다.
+        m_hashByTick.erase(m_hashByTick.begin(), m_hashByTick.lower_bound(m_clientSimTick));
+        RecordHash(world, m_clientSimTick);
+    }
+
+    void NetworkSyncSystem::FallBackToFullSnapshot(NetworkManager& network) {
+        ++m_partialFallbackCount;
+        // in-flight 플래그는 내리지 않는다. 전체 스냅샷이 도착해 적용될 때 내려간다
+        // (WorldSnapshot 처리). 여기서 내리면 다음 불일치가 또 ResyncRequest를 띄워 겹친다.
+        // 반환값은 무시한다 — SendPacket의 false는 "큐에 넣었지만 지금 flush 실패"라
+        // 재전송으로 결국 나간다(VerifyPendingTickHashes의 같은 주석 참조).
+        network.SendWorldSnapshotRequest(m_lastSnapshotTick);
+    }
+
+    const WorldHashBreakdown& NetworkSyncSystem::RecordHash(World& world, uint64_t tick) {
+        WorldHashBreakdown& recorded = m_hashByTick[tick];
+        recorded = world.ComputeHashBreakdown();
 
         // 무한히 쌓이지 않게 자른다. TickHash는 서버가 매 tick 보내고 클라는 입력 지연 +
         // RTT만큼 뒤처지므로, 이 창보다 오래 밀린 해시는 어차피 비교 가치가 없다.
-        while (m_localHashByTick.size() > kLocalHashHistoryTicks) {
-            m_localHashByTick.erase(m_localHashByTick.begin());
+        // 서버 쪽에서는 이 창이 곧 "부분 resync를 받아 줄 수 있는 과거의 한계"다.
+        // (std::map 노드는 다른 항목을 지워도 옮겨지지 않으므로 recorded 참조는 유효하다.
+        //  방금 넣은 tick이 가장 오래된 항목이 되는 경우만 예외인데, tick은 단조 증가라 그럴 일이 없다.)
+        while (m_hashByTick.size() > kHashHistoryTicks) {
+            m_hashByTick.erase(m_hashByTick.begin());
         }
+        return recorded;
     }
 
     void NetworkSyncSystem::VerifyPendingTickHashes(NetworkManager& network) {
@@ -311,15 +385,15 @@ namespace EF {
             // ⚠️ 반드시 "그 tick의" 로컬 해시와 비교한다. world.ComputeHash()를 여기서
             //    부르면 현재(= clientSimTick) 상태가 나오는데, 프레임이 몰아서 적용되면
             //    tick != clientSimTick 이라 정상 상태를 불일치로 판정한다.
-            auto localIt = m_localHashByTick.find(tick);
-            if (localIt == m_localHashByTick.end()) {
+            auto localIt = m_hashByTick.find(tick);
+            if (localIt == m_hashByTick.end()) {
                 // 기록이 잘려 나갔거나 애초에 시뮬레이션한 적 없는 tick이다.
                 // 판정할 근거가 없으므로 조용히 버린다 — 추측으로 디싱크를 선언하지 않는다.
                 it = m_pendingTickHashes.erase(it);
                 continue;
             }
 
-            const uint64_t localHash = localIt->second;
+            const uint64_t localHash = localIt->second.worldHash;
             if (localHash != remoteHash) {
                 m_hasHashMismatch = true;
 
@@ -341,7 +415,13 @@ namespace EF {
                     //    false를 보고 다시 보내면 요청이 중복 적재되고, 링크가 회복되는 순간
                     //    그게 한꺼번에 나가 서버가 스냅샷을 그 수만큼 답한다 — 막으려던
                     //    폭주가 오히려 링크가 나쁠 때 터진다.
-                    network.SendResyncRequest(tick, localHash, remoteHash);
+                    // 그 tick의 분해표를 함께 싣는다. 서버가 풀 단위로 비교해 부분 스냅샷으로
+                    // 답할지 전체 스냅샷으로 답할지 정한다(SelectPoolsForPartialResync).
+                    network.SendResyncRequest(ResyncRequest{
+                        .tick = tick,
+                        .remoteHash = remoteHash,
+                        .localBreakdown = localIt->second
+                    });
                     m_resyncRequestInFlight = true;
                 }
             }
@@ -383,6 +463,8 @@ namespace EF {
 
                 // 요청한 스냅샷이 도착했다. 다음 불일치에는 다시 요청할 수 있다.
                 m_resyncRequestInFlight = false;
+                // 더 새로운 정답이 왔다. 기다리던 부분 스냅샷은 버린다(partial-resync.md §5-6).
+                m_pendingPartialSnapshot.reset();
                 ++m_appliedSnapshotCount;
                 m_lastSnapshotTick = snapshot.tick;
                 m_clientSimTick = snapshot.tick;
@@ -392,8 +474,8 @@ namespace EF {
 
                 // 스냅샷은 월드를 통째로 갈아끼운다. 이전 해시 기록은 지금 월드와 무관하므로
                 // 버리고, 스냅샷 tick의 해시를 새 기준선으로 남긴다.
-                m_localHashByTick.clear();
-                RecordLocalHash(world, m_clientSimTick);
+                m_hashByTick.clear();
+                RecordHash(world, m_clientSimTick);
 
                 // 스냅샷보다 오래된 TickHash는 판정 근거가 사라졌다.
                 m_pendingTickHashes.erase(m_pendingTickHashes.begin(),
@@ -407,6 +489,25 @@ namespace EF {
             if (NetworkManager::DecodeInputFrame(packet.payload, frame) && m_hasSnapshot && frame.tick > m_clientSimTick) {
                 m_frameBuffer.try_emplace(frame.tick, std::move(frame));
             }
+            break;
+        }
+
+        case Network::PacketType::PartialSnapshot: {
+            PartialSnapshot partial;
+            if (!NetworkManager::DecodePartialSnapshot(packet.payload, partial)) {
+                break;
+            }
+            // 요청한 적 없는 부분 스냅샷(이미 전체로 복구됐거나 중복 도착)은 버린다.
+            if (!m_hasSnapshot || !m_resyncRequestInFlight) {
+                break;
+            }
+            if (partial.tick < m_clientSimTick) {
+                // 이미 지나친 tick의 풀이다. 끼울 시점이 없으므로 전체로 간다.
+                // (§4.1의 논리상 일어나지 않아야 하지만, 와이어 값을 믿고 잘못 끼우는 것보다 낫다.)
+                FallBackToFullSnapshot(network);
+                break;
+            }
+            m_pendingPartialSnapshot = std::move(partial);
             break;
         }
 
@@ -425,7 +526,7 @@ namespace EF {
                     // 넘칠 때 "가장 새 것"을 버리는 이유: 검증은 오래된 tick부터 순서대로
                     // 소비된다. 구멍이 재전송으로 메워지면 클라는 버퍼된 프레임을 따라
                     // 앞에서부터 따라잡으므로, 가까운 미래의 해시가 먼 미래의 것보다 쓸모 있다.
-                    while (m_pendingTickHashes.size() > kLocalHashHistoryTicks) {
+                    while (m_pendingTickHashes.size() > kHashHistoryTicks) {
                         m_pendingTickHashes.erase(std::prev(m_pendingTickHashes.end()));
                     }
                 }
@@ -492,14 +593,24 @@ namespace EF {
         }
 
         case Network::PacketType::ResyncRequest: {
-            uint64_t resyncTick = 0;
-            uint64_t localHash = 0;
-            uint64_t remoteHash = 0;
-            if (NetworkManager::DecodeResyncRequest(packet.payload, resyncTick, localHash, remoteHash)) {
-                static_cast<void>(resyncTick);
-                static_cast<void>(localHash);
-                static_cast<void>(remoteHash);
-                network.SendWorldSnapshot(world.CreateSnapshot(SimulatedThroughTick(tick)), from);
+            ResyncRequest request;
+            if (NetworkManager::DecodeResyncRequest(packet.payload, request)) {
+                // 클라가 불일치를 본 tick T의 분해표를 서버의 T 기록과 비교한다.
+                // 고칠 수 있으면 어긋난 풀만, 아니면(기록 없음·엔티티 불일치 등) 전체를 보낸다.
+                //
+                // 부분 스냅샷의 풀은 **지금 월드(= X = tick-1까지 시뮬레이션한 상태)** 의 값이다.
+                // T 시점의 값이 아니다 — 서버는 월드를 tick마다 보관하지 않는다(§3.2 버린 대안).
+                // 그래서 클라는 X까지 따라온 뒤에 끼운다.
+                const uint64_t snapshotTick = SimulatedThroughTick(tick);
+                const std::optional<std::vector<TypeHash>> pools =
+                    SelectPoolsForPartialResync(request.localBreakdown, HashBreakdownAt(request.tick));
+                if (pools) {
+                    network.SendPartialSnapshot(world.CreatePartialSnapshot(snapshotTick, *pools), from);
+                    ++m_partialSnapshotsSent;
+                } else {
+                    network.SendWorldSnapshot(world.CreateSnapshot(snapshotTick), from);
+                    ++m_fullResyncSnapshotsSent;
+                }
             }
             break;
         }

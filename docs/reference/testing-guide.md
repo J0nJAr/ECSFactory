@@ -232,6 +232,13 @@ EXPECT_TRUE(clientSync.HasHashMismatch());   // 탐지
 `Network.ResyncRequestDoesNotStormOnSingleDesync`(요청 폭주 없음),
 `Network.NoInjectionKeepsCleanSessionFreeOfHashMismatch`(대조군).
 
+부분 resync(어긋난 풀만 보내고 안 되면 전체)는 경로가 셋이라 셋 다 주입으로 밟는다
+([partial-resync.md](../design/partial-resync.md)):
+`Network.PartialResyncRepairsTransformOnlyDesync`(부분 경로 — 전체 스냅샷이 한 번도 안 와야 한다),
+`Network.EntityAllocationDesyncFallsBackToFullSnapshot`(엔티티 할당이 갈라지면 서버가 처음부터 전체),
+`Network.InsufficientPartialSnapshotFallsBackToFull`(끼운 직후 해시가 안 맞으면 클라가 전체 요청).
+폴백은 부분 경로가 잘 될수록 평소에 안 밟힌다 — 주입하지 않으면 아무도 확인하지 않는다.
+
 ### 5.2 ⚠️ 정지한 월드로 검증하면 안 된다
 
 이 저장소가 실제로 데인 곳이다. **월드가 정지해 있으면 복구가 되는 것처럼 보인다.**
@@ -261,7 +268,7 @@ EXPECT_EQ(clientWorld.ComputeHash(), serverWorld.ComputeHash());
 
 | 인자 | 뜻 |
 |---|---|
-| `--frames N` | N프레임만 돌고 스스로 종료 |
+| `--frames N` | N프레임만 돌고 스스로 종료. 종료 때 `세션 요약: 스냅샷 적용 N회, 부분 스냅샷 적용 M회(폴백 K회)` 를 로그에 남긴다 — 전체 1회(조인)·부분 0회가 정상이고, 그 밖이면 그 세션에 resync가 있었다 |
 | `--capture x.ppm` | 마지막 프레임 백버퍼를 PPM으로 저장 |
 | `--input-script "20:W,80:"` | **가짜 키보드.** tick 20에 전진, tick 80에 정지 |
 

@@ -43,6 +43,67 @@ namespace EF {
             return true;
         }
 
+        // ComponentSnapshot 한 개: (type, u32 entityCount, u32 entity ×, u32 byteCount, bytes).
+        // WorldSnapshot과 PartialSnapshot이 같은 배치를 쓴다.
+        void WriteComponentSnapshot(Writer& writer, const ComponentSnapshot& component) {
+            WriteType(writer, component.type);
+            writer.U32(static_cast<uint32_t>(component.entities.size()));
+            for (EntityIndex entity : component.entities) {
+                writer.U32(entity);
+            }
+            writer.U32(static_cast<uint32_t>(component.bytes.size()));
+            writer.Bytes(component.bytes.data(), component.bytes.size());
+        }
+
+        bool ReadComponentSnapshot(Reader& reader, ComponentSnapshot& component) {
+            uint32_t entityCount = 0;
+            uint32_t byteCount = 0;
+            if (!ReadType(reader, component.type) || !reader.U32(entityCount)) {
+                return false;
+            }
+
+            component.entities.clear();
+            component.entities.reserve(SafeReserveCount(entityCount, reader));
+            for (uint32_t i = 0; i < entityCount; ++i) {
+                uint32_t entity = 0;
+                if (!reader.U32(entity)) {
+                    return false;
+                }
+                component.entities.push_back(entity);
+            }
+
+            return reader.U32(byteCount) && reader.Bytes(component.bytes, byteCount);
+        }
+
+        // 해시 분해표: u64 entityHash, u64 worldHash, u32 poolCount, (u64 type, u64 hash) ×.
+        void WriteHashBreakdown(Writer& writer, const WorldHashBreakdown& breakdown) {
+            writer.U64(breakdown.entityHash);
+            writer.U64(breakdown.worldHash);
+            writer.U32(static_cast<uint32_t>(breakdown.pools.size()));
+            for (const PoolHash& pool : breakdown.pools) {
+                writer.U64(pool.type);
+                writer.U64(pool.hash);
+            }
+        }
+
+        bool ReadHashBreakdown(Reader& reader, WorldHashBreakdown& breakdown) {
+            uint32_t poolCount = 0;
+            if (!reader.U64(breakdown.entityHash) || !reader.U64(breakdown.worldHash) || !reader.U32(poolCount)) {
+                return false;
+            }
+
+            breakdown.pools.clear();
+            breakdown.pools.reserve(SafeReserveCount(poolCount, reader));
+            for (uint32_t i = 0; i < poolCount; ++i) {
+                PoolHash pool;
+                if (!reader.U64(pool.type) || !reader.U64(pool.hash)) {
+                    return false;
+                }
+                breakdown.pools.push_back(pool);
+            }
+            return true;
+        }
+
         void WriteInputCommand(Writer& writer, const InputCommand& command) {
             writer.U32(command.clientId);
             writer.U64(command.tick);
@@ -284,13 +345,12 @@ namespace EF {
         return SendPacket(Network::PacketType::TickHash, EncodeTickHash(tickHash), target);
     }
 
-    bool NetworkManager::SendResyncRequest(uint64_t tick, uint64_t localHash, uint64_t remoteHash,
-                                           const Network::Endpoint& target) {
-        Writer writer;
-        writer.U64(tick);
-        writer.U64(localHash);
-        writer.U64(remoteHash);
-        return SendPacket(Network::PacketType::ResyncRequest, writer.Take(), target);
+    bool NetworkManager::SendResyncRequest(const ResyncRequest& request, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::ResyncRequest, EncodeResyncRequest(request), target);
+    }
+
+    bool NetworkManager::SendPartialSnapshot(const PartialSnapshot& snapshot, const Network::Endpoint& target) {
+        return SendPacket(Network::PacketType::PartialSnapshot, EncodePartialSnapshot(snapshot), target);
     }
 
     bool NetworkManager::SendPacket(Network::PacketType type, const std::vector<uint8_t>& payload,
@@ -500,13 +560,7 @@ namespace EF {
 
         writer.U32(static_cast<uint32_t>(snapshot.components.size()));
         for (const ComponentSnapshot& component : snapshot.components) {
-            WriteType(writer, component.type);
-            writer.U32(static_cast<uint32_t>(component.entities.size()));
-            for (EntityIndex entity : component.entities) {
-                writer.U32(entity);
-            }
-            writer.U32(static_cast<uint32_t>(component.bytes.size()));
-            writer.Bytes(component.bytes.data(), component.bytes.size());
+            WriteComponentSnapshot(writer, component);
         }
 
         return writer.Take();
@@ -570,27 +624,55 @@ namespace EF {
         outSnapshot.components.reserve(SafeReserveCount(componentCount, reader));
         for (uint32_t i = 0; i < componentCount; ++i) {
             ComponentSnapshot component;
-            uint32_t entityCount = 0;
-            uint32_t byteCount = 0;
-            if (!ReadType(reader, component.type) || !reader.U32(entityCount)) {
-                return false;
-            }
-
-            component.entities.reserve(SafeReserveCount(entityCount, reader));
-            for (uint32_t entityIndex = 0; entityIndex < entityCount; ++entityIndex) {
-                uint32_t entity = 0;
-                if (!reader.U32(entity)) {
-                    return false;
-                }
-                component.entities.push_back(entity);
-            }
-
-            if (!reader.U32(byteCount) || !reader.Bytes(component.bytes, byteCount)) {
+            if (!ReadComponentSnapshot(reader, component)) {
                 return false;
             }
             outSnapshot.components.push_back(std::move(component));
         }
 
+        return reader.Finished();
+    }
+
+    /**
+     * PartialSnapshot 와이어 포맷 (프로토콜 v3).
+     *
+     *   u64  tick
+     *   u64  entityHash
+     *   u64  worldHash
+     *   u32  componentCount ; ComponentSnapshot × (WorldSnapshot과 같은 배치)
+     *
+     * 엔티티 상태는 싣지 않는다. 받는 쪽 엔티티 상태가 이미 같다는 것을 entityHash로 확인한다
+     * (PartialSnapshot 주석 참조).
+     */
+    std::vector<uint8_t> NetworkManager::EncodePartialSnapshot(const PartialSnapshot& snapshot) {
+        Writer writer;
+        writer.U64(snapshot.tick);
+        writer.U64(snapshot.entityHash);
+        writer.U64(snapshot.worldHash);
+        writer.U32(static_cast<uint32_t>(snapshot.components.size()));
+        for (const ComponentSnapshot& component : snapshot.components) {
+            WriteComponentSnapshot(writer, component);
+        }
+        return writer.Take();
+    }
+
+    bool NetworkManager::DecodePartialSnapshot(const std::vector<uint8_t>& payload, PartialSnapshot& outSnapshot) {
+        Reader reader(payload);
+        uint32_t componentCount = 0;
+        if (!reader.U64(outSnapshot.tick) || !reader.U64(outSnapshot.entityHash) ||
+            !reader.U64(outSnapshot.worldHash) || !reader.U32(componentCount)) {
+            return false;
+        }
+
+        outSnapshot.components.clear();
+        outSnapshot.components.reserve(SafeReserveCount(componentCount, reader));
+        for (uint32_t i = 0; i < componentCount; ++i) {
+            ComponentSnapshot component;
+            if (!ReadComponentSnapshot(reader, component)) {
+                return false;
+            }
+            outSnapshot.components.push_back(std::move(component));
+        }
         return reader.Finished();
     }
 
@@ -681,15 +763,26 @@ namespace EF {
                reader.Finished();
     }
 
-    bool NetworkManager::DecodeResyncRequest(
-        const std::vector<uint8_t>& payload,
-        uint64_t& outTick,
-        uint64_t& outLocalHash,
-        uint64_t& outRemoteHash) {
+    /**
+     * ResyncRequest 와이어 포맷 (프로토콜 v3).
+     *
+     *   u64  tick          클라가 불일치를 본 tick
+     *   u64  remoteHash    클라가 받은 서버 TickHash
+     *   해시 분해표         tick 시점 클라의 것 (WriteHashBreakdown)
+     */
+    std::vector<uint8_t> NetworkManager::EncodeResyncRequest(const ResyncRequest& request) {
+        Writer writer;
+        writer.U64(request.tick);
+        writer.U64(request.remoteHash);
+        WriteHashBreakdown(writer, request.localBreakdown);
+        return writer.Take();
+    }
+
+    bool NetworkManager::DecodeResyncRequest(const std::vector<uint8_t>& payload, ResyncRequest& outRequest) {
         Reader reader(payload);
-        return reader.U64(outTick) &&
-               reader.U64(outLocalHash) &&
-               reader.U64(outRemoteHash) &&
+        return reader.U64(outRequest.tick) &&
+               reader.U64(outRequest.remoteHash) &&
+               ReadHashBreakdown(reader, outRequest.localBreakdown) &&
                reader.Finished();
     }
 }

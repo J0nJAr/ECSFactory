@@ -18,7 +18,9 @@ namespace EF::Network {
     // 이력:
     //   1 — 최초.
     //   2 — WorldSnapshot에 EntitySnapshot(nextEntityIndex / versions / freeIndices) 추가.
-    inline constexpr uint8_t kProtocolVersion = 2;
+    //   3 — ResyncRequest에 해시 분해표, PartialSnapshot 패킷 추가(부분 resync, N4.3).
+    //       실제로 막는 것은 ReliabilityChannel.cpp의 kReliabilityVersion(3)이다.
+    inline constexpr uint8_t kProtocolVersion = 3;
 
     enum class PacketType : uint8_t {
         Hello = 1,
@@ -29,7 +31,8 @@ namespace EF::Network {
         TickHash = 6,
         ResyncRequest = 7,
         Welcome = 8,
-        InputFrame = 9
+        InputFrame = 9,
+        PartialSnapshot = 10    // 부분 resync — 어긋난 풀만(docs/design/partial-resync.md)
     };
 
     struct PacketHeader {

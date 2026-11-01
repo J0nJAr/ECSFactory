@@ -51,6 +51,70 @@ namespace EF {
         std::vector<ComponentSnapshot> components;
     };
 
+    /**
+     * 월드의 **일부 풀만** 담은 스냅샷. 부분 resync용(docs/design/partial-resync.md).
+     *
+     * 전체 스냅샷과 달리 엔티티 상태를 싣지 않는다 — 대신 받는 쪽의 엔티티 상태가 이미
+     * 같다는 것을 `entityHash` 로 확인한다. 엔티티 할당이 갈라졌다면 풀 몇 개를 갈아끼워서는
+     * 고칠 수 없으므로 그때는 전체 스냅샷으로 간다(폴백).
+     *
+     * - `tick` — 이 풀들이 어느 시점의 값인가. 전체 스냅샷과 같은 라벨 계약
+     *   (`SimulatedThroughTick`)을 따른다. 받는 쪽은 **자기 시뮬레이션이 이 tick에 도달했을 때만**
+     *   갈아끼워야 한다 — 다른 tick의 풀과 섞으면 서로 다른 시점의 상태가 한 월드에 공존한다.
+     * - `entityHash` / `worldHash` — 보내는 쪽의 그 tick 시점 값. 받는 쪽은 적용 전에
+     *   `entityHash` 를, 적용 직후 `worldHash` 를 비교해 부분 복구가 충분했는지 즉시 판정한다.
+     *   (어긋남은 번진다: 서버가 고른 풀만으로는 부족할 수 있다.)
+     * - `components` — 갈아끼울 풀들. 엔티티가 0개인 풀도 실린다("그 풀을 비워라").
+     */
+    struct PartialSnapshot {
+        uint64_t tick = 0;
+        uint64_t entityHash = 0;
+        uint64_t worldHash = 0;
+        std::vector<ComponentSnapshot> components;
+    };
+
+    /// 풀 하나의 결정론 해시. 부분 resync가 "어느 풀이 어긋났나"를 판정하는 단위다.
+    struct PoolHash {
+        TypeHash type = 0;
+        uint64_t hash = 0;
+    };
+
+    /**
+     * `World::ComputeHash()` 를 층별로 쪼갠 결과. 부분 resync(docs/design/partial-resync.md)용.
+     *
+     * - `entityHash` — EntityManager 할당 상태(next index / versions / free list)만의 해시.
+     * - `pools` — 해시 대상 풀마다 하나. **`type` 오름차순으로 정렬되어 있다.**
+     * - `worldHash` — 위 둘을 정해진 순서로 섞은 값. `TickHash` 가 싣는 바로 그 값이다.
+     *
+     * ⚠️ 불변식: `worldHash` 는 반드시 `entityHash` 와 `pools` 에서 **유도**된다.
+     *    월드 해시를 따로 계산하는 두 번째 경로를 만들면 언젠가 어긋나고, 그러면
+     *    "풀 해시는 전부 같은데 월드 해시만 다른" 상태가 생겨 부분 resync가 고를 풀이 없어진다.
+     *    그래서 `ComputeHash()` 도 이 구조체의 `worldHash` 를 돌려줄 뿐이다.
+     */
+    struct WorldHashBreakdown {
+        uint64_t entityHash = 0;
+        std::vector<PoolHash> pools;
+        uint64_t worldHash = 0;
+    };
+
+    namespace Internal {
+        /// 64비트 FNV-1a 누산기. 정수는 빅엔디안 바이트 순서로 섞는다(플랫폼과 무관하게 같은 값).
+        struct Fnv1a64 {
+            uint64_t value = 14695981039346656037ull;
+
+            void MixByte(std::byte byte) noexcept {
+                value ^= static_cast<uint64_t>(std::to_integer<uint8_t>(byte));
+                value *= 1099511628211ull;
+            }
+
+            void MixUInt64(uint64_t number) noexcept {
+                for (int shift = 56; shift >= 0; shift -= 8) {
+                    MixByte(static_cast<std::byte>((number >> shift) & 0xFF));
+                }
+            }
+        };
+    }
+
     // 시뮬레이션 한 덩어리. Registry(엔티티·컴포넌트) + SystemRegistry(시스템) +
     // 타입 키 리소스 맵(월드별 싱글턴, 예: NetworkManager)의 조합이다.
     //
@@ -61,8 +125,8 @@ namespace EF {
     //  - CreateSnapshot / ApplySnapshot은 trivially-copyable 컴포넌트만 다룬다.
     //    ApplySnapshot은 엔티티 할당 상태를 먼저 복원한 뒤 컴포넌트를 채우고,
     //    타입 모양이나 엔티티 index가 어긋나면 아무것도 바꾸지 않고 거부한다.
-    //  - ComputeHash는 trivial 풀의 내용으로 결정론 체크섬을 만든다. 풀 순회 순서는
-    //    TypeInfo::hash 오름차순이라 프로세스가 달라도 같은 내용이면 같은 값이 나온다.
+    //  - ComputeHash는 엔티티 할당 상태와 trivial 풀의 내용으로 결정론 체크섬을 만든다.
+    //    풀 순회 순서는 TypeInfo::hash 오름차순이라 프로세스가 달라도 같은 내용이면 같은 값이 나온다.
     //
     // 이 타입이 하지 않는 일:
     //  - 네트워크를 모른다. 스냅샷을 만들고 적용할 뿐, 보내는 건 NetworkSyncSystem이다.
@@ -73,11 +137,44 @@ namespace EF {
         Registry m_registry;
         SystemRegistry m_systems;
         std::unordered_map<TypeHash, std::unique_ptr<void, void(*)(void*)>> m_resources;
-        std::unordered_map<TypeHash, std::function<bool(Registry&, const ComponentSnapshot&)>> m_snapshotAppliers;
+        /**
+         * 스냅샷 컴포넌트 타입 하나를 다루는 한 쌍의 함수. `RegisterSnapshotComponent<T>` 가 만든다.
+         *
+         * 검사와 적용을 나눈 이유: 부분 스냅샷 적용(`ApplyPartialSnapshot`)은 **전부 아니면 전무**
+         * 여야 한다. 풀 셋 중 두 번째에서 모양이 안 맞는다고 첫 번째만 바뀐 채 남으면, 그 월드는
+         * 서버의 어느 시점과도 같지 않은 상태가 된다. 그래서 모든 풀을 먼저 검사하고, 전부
+         * 통과했을 때만 적용한다. 예전에는 한 함수가 검사 후 바로 적용했다.
+         */
+        struct SnapshotApplier {
+            // 타입 모양(hash/size/alignment/trivial)과 바이트 수가 이 타입과 맞는가. 부작용 없음.
+            std::function<bool(const ComponentSnapshot&)> check;
+            // 검사를 통과한 스냅샷을 registry에 채운다. 엔티티 생존 검사는 호출자의 몫이다.
+            std::function<void(Registry&, const ComponentSnapshot&)> apply;
+        };
+        std::unordered_map<TypeHash, SnapshotApplier> m_snapshotAppliers;
 
         // ComputeHash에서 제외할 타입들(클라이언트 전용 표현 컴포넌트).
         // RegisterPresentationComponent 주석 참조.
         std::unordered_set<TypeHash> m_presentationTypes;
+
+        // 풀 하나의 현재 내용을 와이어용 ComponentSnapshot으로 복사한다.
+        [[nodiscard]] static ComponentSnapshot MakeComponentSnapshot(const IPool& pool) {
+            const TypeInfo& type = pool.GetType();
+            ComponentSnapshot componentSnapshot;
+            componentSnapshot.type = ComponentTypeDescriptor{
+                .hash = type.hash,
+                .size = type.size,
+                .alignment = type.alignment,
+                .isTrivial = type.isTrivial
+            };
+
+            const auto entities = pool.GetDenseEntities();
+            componentSnapshot.entities.assign(entities.begin(), entities.end());
+
+            const auto bytes = pool.GetRawBytes();
+            componentSnapshot.bytes.assign(bytes.begin(), bytes.end());
+            return componentSnapshot;
+        }
 
     public:
         EntityId CreateEntity() {
@@ -192,26 +289,24 @@ namespace EF {
             static_assert(std::is_trivially_copyable_v<T>, "Snapshot components must be trivially copyable.");
 
             const TypeInfo& type = GetTypeInfo<T>();
-            m_snapshotAppliers[type.hash] = [](Registry& registry, const ComponentSnapshot& snapshot) {
-                const TypeInfo& localType = GetTypeInfo<T>();
-                if (snapshot.type.hash != localType.hash ||
-                    snapshot.type.size != localType.size ||
-                    snapshot.type.alignment != localType.alignment ||
-                    !snapshot.type.isTrivial) {
-                    return false;
+            m_snapshotAppliers[type.hash] = SnapshotApplier{
+                .check = [](const ComponentSnapshot& snapshot) {
+                    const TypeInfo& localType = GetTypeInfo<T>();
+                    if (snapshot.type.hash != localType.hash ||
+                        snapshot.type.size != localType.size ||
+                        snapshot.type.alignment != localType.alignment ||
+                        !snapshot.type.isTrivial) {
+                        return false;
+                    }
+                    return snapshot.bytes.size() == snapshot.entities.size() * sizeof(T);
+                },
+                .apply = [](Registry& registry, const ComponentSnapshot& snapshot) {
+                    const std::byte* cursor = snapshot.bytes.data();
+                    for (EntityIndex entityIndex : snapshot.entities) {
+                        registry.AddComponentRaw<T>(entityIndex, cursor);
+                        cursor += sizeof(T);
+                    }
                 }
-
-                const std::size_t expectedBytes = snapshot.entities.size() * sizeof(T);
-                if (snapshot.bytes.size() != expectedBytes) {
-                    return false;
-                }
-
-                const std::byte* cursor = snapshot.bytes.data();
-                for (EntityIndex entityIndex : snapshot.entities) {
-                    registry.AddComponentRaw<T>(entityIndex, cursor);
-                    cursor += sizeof(T);
-                }
-                return true;
             };
         }
 
@@ -249,24 +344,90 @@ namespace EF {
                     continue;
                 }
 
-                ComponentSnapshot componentSnapshot;
-                componentSnapshot.type = ComponentTypeDescriptor{
-                    .hash = type.hash,
-                    .size = type.size,
-                    .alignment = type.alignment,
-                    .isTrivial = type.isTrivial
-                };
-
-                const auto entities = pool->GetDenseEntities();
-                componentSnapshot.entities.assign(entities.begin(), entities.end());
-
-                const auto bytes = pool->GetRawBytes();
-                componentSnapshot.bytes.assign(bytes.begin(), bytes.end());
-
-                snapshot.components.push_back(std::move(componentSnapshot));
+                snapshot.components.push_back(MakeComponentSnapshot(*pool));
             }
 
             return snapshot;
+        }
+
+        /**
+         * 지정한 타입의 풀만 담은 부분 스냅샷을 만든다. 부분 resync의 서버 쪽.
+         *
+         * `types` 는 보통 `SelectPoolsForPartialResync` 가 고른 목록이다. 이 월드에 그 타입의
+         * 풀이 아예 없으면 엔티티 0개짜리 풀을 싣지 **않고** 건너뛴다 — 타입 모양(size 등)을
+         * 알 방법이 없기 때문이다. 그런 경우는 "풀 집합이 다름"이라 선택 단계에서 이미 전체
+         * 스냅샷으로 걸러진다.
+         */
+        [[nodiscard]] PartialSnapshot CreatePartialSnapshot(uint64_t tick, const std::vector<TypeHash>& types) const {
+            const WorldHashBreakdown breakdown = ComputeHashBreakdown();
+
+            PartialSnapshot snapshot;
+            snapshot.tick = tick;
+            snapshot.entityHash = breakdown.entityHash;
+            snapshot.worldHash = breakdown.worldHash;
+
+            for (TypeHash wanted : types) {
+                for (const auto& pool : m_registry.GetPools()) {
+                    if (pool && pool->GetType().isTrivial && pool->GetType().hash == wanted) {
+                        snapshot.components.push_back(MakeComponentSnapshot(*pool));
+                        break;
+                    }
+                }
+            }
+            return snapshot;
+        }
+
+        /**
+         * 부분 스냅샷의 풀들로 해당 풀을 **통째로 갈아끼운다.** 전부 아니면 전무다.
+         *
+         * 거부(false, 월드는 그대로)하는 경우:
+         *  - 이 월드의 `entityHash` 가 스냅샷의 것과 다르다 — 엔티티 할당이 갈라졌으면 풀만
+         *    바꿔서는 못 고친다. 호출자는 전체 스냅샷으로 폴백해야 한다.
+         *  - 이 클라가 등록하지 않은 타입이 있다 — 전체 스냅샷에서는 미등록 타입을 "무시"하지만
+         *    여기서는 거부한다. 서버가 그 풀이 어긋났다고 판정해서 보낸 것이므로, 무시하면
+         *    고쳐지지 않은 채 "복구했다"고 착각하게 된다.
+         *  - 타입 모양이나 바이트 수가 안 맞는다, 또는 죽은 엔티티 index에 컴포넌트가 붙어 있다.
+         *
+         * ⚠️ 이 함수는 tick을 모른다. **"내 시뮬레이션이 `snapshot.tick` 에 도달했는가"는
+         *    호출자(NetworkSyncSystem)가 지켜야 한다.** 그리고 적용 후 `worldHash` 비교도
+         *    호출자가 한다 — 여기서 true는 "갈아끼웠다"이지 "이제 서버와 같다"가 아니다.
+         */
+        [[nodiscard]] bool ApplyPartialSnapshot(const PartialSnapshot& snapshot) {
+            if (ComputeHashBreakdown().entityHash != snapshot.entityHash) {
+                return false;
+            }
+
+            // 살아 있는 index 판정용 비트맵(ApplySnapshot과 같은 방식).
+            const EntityStateView entities = m_registry.ViewEntityState();
+            std::vector<bool> isAlive(entities.versions.size(), true);
+            for (EntityIndex freeIndex : entities.freeIndices) {
+                isAlive[freeIndex] = false;
+            }
+
+            // 1단계 — 전부 검사한다. 여기서는 아무것도 바꾸지 않는다.
+            std::vector<const SnapshotApplier*> appliers;
+            appliers.reserve(snapshot.components.size());
+            for (const ComponentSnapshot& component : snapshot.components) {
+                for (EntityIndex entityIndex : component.entities) {
+                    if (static_cast<std::size_t>(entityIndex) >= isAlive.size() || !isAlive[entityIndex]) {
+                        return false;
+                    }
+                }
+
+                auto applierIt = m_snapshotAppliers.find(component.type.hash);
+                if (applierIt == m_snapshotAppliers.end() || !applierIt->second.check(component)) {
+                    return false;
+                }
+                appliers.push_back(&applierIt->second);
+            }
+
+            // 2단계 — 전부 통과했을 때만 갈아끼운다. 풀을 비우고 스냅샷 내용으로 다시 채운다.
+            // 살아 있는 index만 가리키므로 AddComponentRaw가 엔티티를 새로 만들 일은 없다.
+            for (std::size_t i = 0; i < snapshot.components.size(); ++i) {
+                m_registry.ClearPool(snapshot.components[i].type.hash);
+                appliers[i]->apply(m_registry, snapshot.components[i]);
+            }
+            return true;
         }
 
         /**
@@ -316,9 +477,12 @@ namespace EF {
                     continue;
                 }
 
-                if (!applierIt->second(newRegistry, componentSnapshot)) {
+                // newRegistry는 실패하면 버려지는 임시본이라, 여기서는 검사 직후 바로 채워도
+                // 원래 월드가 반쯤 바뀌는 일이 없다.
+                if (!applierIt->second.check(componentSnapshot)) {
                     return false;
                 }
+                applierIt->second.apply(newRegistry, componentSnapshot);
             }
 
             m_registry = std::move(newRegistry);
@@ -326,9 +490,18 @@ namespace EF {
         }
 
         /**
-         * 결정론 검증용 체크섬. trivially-copyable 풀의 (타입, dense index, 바이트)를 FNV-1a로 섞는다.
+         * 결정론 체크섬을 층별로 계산한다. `EntityManager` 상태(next index / versions / free list)의
+         * 해시, trivially-copyable 풀마다의 (타입, dense index, 바이트) 해시를 각각 FNV-1a로 만든 뒤,
+         * 그 둘을 섞어 월드 해시를 유도한다. 층으로 나눈 이유는 부분 resync다 — 디싱크가 나면
+         * 어느 풀이 어긋났는지 알아야 그 풀만 보낼 수 있다(N4.2, docs/design/partial-resync.md).
          *
-         * **풀 순회 순서는 `TypeInfo::hash` 오름차순으로 고정한다.** 이게 이 함수의 유일한
+         * 버린 대안: 월드 해시는 예전처럼 한 누산기로 전부 섞고, 풀 해시는 따로 한 번 더 계산하기.
+         * 값은 예전과 같게 유지되지만 tick마다 모든 풀의 바이트를 두 번 돈다. 그리고 두 경로가
+         * 따로 있으면 언젠가 어긋난다. 해시 값 자체가 바뀌는 건 문제가 아니다 — 서버와 클라가
+         * 같은 코드로 함께 바뀌고, 해시 값을 디스크에 저장하는 곳도 없다.
+         *    (옛 버전 peer와 섞이면 TickHash가 어긋나지만, 그런 혼합은 와이어 버전 검사가 막을 일이다.)
+         *
+         * **풀 순회 순서는 `TypeInfo::hash` 오름차순으로 고정한다.** 이게 이 함수의 가장
          * 비자명한 부분이라 이유를 남긴다.
          *
          * `Registry::GetPools()` 가 돌려주는 벡터는 `TypeInfo::index` 로 인덱싱되어 있고,
@@ -348,7 +521,7 @@ namespace EF {
          *   되지만 index 기반 O(1) 풀 조회를 잃는다. 조회는 컴포넌트를 만질 때마다 일어나고
          *   `ComputeHash` 는 tick당 한 번이다 — 비용은 드문 쪽이 무는 게 맞다.
          *
-         * 비용: 컴포넌트 타입 수 P는 수십 규모라 O(P log P) 정렬 + 작은 vector 하나의 할당은,
+         * 비용: 컴포넌트 타입 수 P는 수십 규모라 O(P log P) 정렬 + 작은 vector 두 개의 할당은,
          * 이 함수가 어차피 도는 "모든 풀의 전체 바이트"(수천~수만 바이트) 앞에서 무시할 수준이다.
          * 프로파일에 잡히면 그때 캐시를 넣되, 풀 추가·삭제 무효화까지 함께 설계해야 한다.
          *
@@ -358,25 +531,43 @@ namespace EF {
          *    정렬 전 순서 자체가 프로세스마다 다르기 때문이다. 해시 충돌은 여기서 고칠 수 있는
          *    문제가 아니라 타입 이름 쪽에서 막아야 하는 문제다.
          *
-         * ⚠️ `EntityManager` 상태(version / free list / nextEntityIndex)는 **일부러 섞지 않는다.**
-         * 섞으면 디싱크를 더 빨리 잡을 수 있지만, 지금은 서버가 확정 입력 밖에서 엔티티를
-         * 스폰하는 경로가 남아 있어서(`NetworkSyncSystem`의 Hello 처리 → `world.CreateEntity()`)
-         * 정상 동작하는 세션조차 불일치로 판정된다. 그 경로를 확정 입력으로 옮기는 것이
-         * roadmap의 N2이고, 엔티티 상태를 해시에 넣는 건 그 뒤에 할 일이다.
+         * ### 엔티티 할당 상태도 섞는다 (N4.1)
+         *
+         * 컴포넌트 풀만 보면 놓치는 디싱크가 있다. 한쪽만 엔티티를 하나 만들었다 지웠다면
+         * 풀에는 흔적이 없지만 next index·version·free list가 달라서, **다음 `CreateEntity()`가
+         * 서로 다른 id를 낸다.** 그 순간부터 같은 확정 입력이 다른 엔티티에 붙는다.
+         * free list는 LIFO라 **순서까지** 섞는다 — 같은 두 index를 다른 순서로 회수한 월드는
+         * 다음 할당이 갈라진다. 각 목록 앞에 길이를 섞어 "어디까지가 versions인가"가
+         * 모호하지 않게 한다.
+         *
+         * 예전에는 일부러 섞지 않았다. 서버가 확정 입력 밖(Hello 처리)에서 엔티티를 만들던
+         * 시절이라, 섞으면 정상 세션조차 불일치로 판정됐다. N2가 스폰을 확정 이벤트 경로로
+         * 옮긴 뒤에야 넣을 수 있게 됐다.
+         *
+         * ⚠️ 귀결: **어떤 peer도 월드 엔티티를 확정 경로 밖에서 만들거나 지우면 안 된다.**
+         *    클라 전용 표현용 엔티티(카메라 등)를 이 월드에 만들면 매 tick 불일치 → 무한 resync다.
+         *    표현 컴포넌트는 `RegisterPresentationComponent` 로 뺄 수 있지만 엔티티 할당은 뺄 방법이 없다.
          */
-        [[nodiscard]] uint64_t ComputeHash() const {
-            uint64_t hash = 14695981039346656037ull;
-            auto mixByte = [&hash](std::byte value) {
-                hash ^= static_cast<uint64_t>(std::to_integer<uint8_t>(value));
-                hash *= 1099511628211ull;
-            };
-            auto mixUInt64 = [&mixByte](uint64_t value) {
-                for (int shift = 56; shift >= 0; shift -= 8) {
-                    mixByte(static_cast<std::byte>((value >> shift) & 0xFF));
-                }
-            };
+        [[nodiscard]] WorldHashBreakdown ComputeHashBreakdown() const {
+            WorldHashBreakdown breakdown;
 
-            // 1단계 — 섞을 풀을 고른다. 여기서는 순서를 신경 쓰지 않는다.
+            // 1층 — 엔티티 할당 상태. 위 함수 주석의 "엔티티 할당 상태도 섞는다" 참조.
+            {
+                Internal::Fnv1a64 entityHash;
+                const EntityStateView entities = m_registry.ViewEntityState();
+                entityHash.MixUInt64(entities.nextEntityIndex);
+                entityHash.MixUInt64(static_cast<uint64_t>(entities.versions.size()));
+                for (EntityVersion version : entities.versions) {
+                    entityHash.MixUInt64(version);
+                }
+                entityHash.MixUInt64(static_cast<uint64_t>(entities.freeIndices.size()));
+                for (EntityIndex freeIndex : entities.freeIndices) {
+                    entityHash.MixUInt64(freeIndex);
+                }
+                breakdown.entityHash = entityHash.value;
+            }
+
+            // 2층 — 섞을 풀을 고른다. 여기서는 순서를 신경 쓰지 않는다.
             std::vector<const IPool*> hashedPools;
             hashedPools.reserve(m_registry.GetPools().size());
 
@@ -394,7 +585,7 @@ namespace EF {
                 hashedPools.push_back(pool.get());
             }
 
-            // 2단계 — 프로세스 간에 안정적인 기준으로 순서를 고정한다. 위 함수 주석 참조.
+            // 프로세스 간에 안정적인 기준으로 순서를 고정한다. 위 함수 주석 참조.
             std::sort(
                 hashedPools.begin(),
                 hashedPools.end(),
@@ -402,23 +593,44 @@ namespace EF {
                     return lhs->GetType().hash < rhs->GetType().hash;
                 });
 
-            // 3단계 — 고정된 순서로 섞는다.
+            // 풀마다 **독립된** 해시를 만든다. 풀 해시끼리 누산기를 공유하면 앞 풀의 내용이
+            // 뒤 풀 해시에 스며들어, "이 풀만 다르다"를 판정할 수 없게 된다.
+            breakdown.pools.reserve(hashedPools.size());
             for (const IPool* pool : hashedPools) {
                 const TypeInfo& type = pool->GetType();
 
-                mixUInt64(type.hash);
-                mixUInt64(static_cast<uint64_t>(type.size));
+                Internal::Fnv1a64 poolHash;
+                poolHash.MixUInt64(type.hash);
+                poolHash.MixUInt64(static_cast<uint64_t>(type.size));
 
                 for (EntityIndex entity : pool->GetDenseEntities()) {
-                    mixUInt64(entity);
+                    poolHash.MixUInt64(entity);
                 }
 
                 for (std::byte value : pool->GetRawBytes()) {
-                    mixByte(value);
+                    poolHash.MixByte(value);
                 }
+
+                breakdown.pools.push_back(PoolHash{ .type = type.hash, .hash = poolHash.value });
             }
 
-            return hash;
+            // 3층 — 월드 해시는 위 두 층에서만 유도한다(WorldHashBreakdown의 불변식).
+            // 풀 개수를 먼저 섞어, 풀 하나가 통째로 빠진 월드와 경계가 모호하지 않게 한다.
+            Internal::Fnv1a64 worldHash;
+            worldHash.MixUInt64(breakdown.entityHash);
+            worldHash.MixUInt64(static_cast<uint64_t>(breakdown.pools.size()));
+            for (const PoolHash& pool : breakdown.pools) {
+                worldHash.MixUInt64(pool.type);
+                worldHash.MixUInt64(pool.hash);
+            }
+            breakdown.worldHash = worldHash.value;
+
+            return breakdown;
+        }
+
+        /// @brief 결정론 체크섬. `ComputeHashBreakdown().worldHash` 와 같다 — 계산 경로는 하나뿐이다.
+        [[nodiscard]] uint64_t ComputeHash() const {
+            return ComputeHashBreakdown().worldHash;
         }
     };
 

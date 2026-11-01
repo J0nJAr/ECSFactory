@@ -10,6 +10,26 @@
 | `msvc-debug` | Visual Studio 2022 MSVC x64 | Debug |
 | `msvc-release` | Visual Studio 2022 MSVC x64 | Release |
 
+## 기준 툴체인은 g++, MSVC는 보조
+
+두 컴파일러를 다 지원하지만 **지위가 같지 않다.**
+
+| | g++ (MSYS2 UCRT64) | MSVC (Visual Studio 2022) |
+|---|---|---|
+| 지위 | **기준.** 결정론 계산의 정답, CI, pre-push 훅 | **보조.** 주로 Visual Studio 디버거를 쓰기 위한 경로 |
+| 검증 | GitHub Actions가 매 푸시 Debug/Release를 빌드·테스트 | **CI가 검증하지 않는다.** 쓰기 전에 `msvc-debug` 테스트를 직접 돌린다 |
+| 깨졌을 때 | 막아야 하는 결함 | 고친다. 오래 방치되면 그때 지운다 |
+
+- **왜 g++가 기준인가.** CI·훅·clangd가 이미 g++ 기준이고, `Fixed64`의 음수 곱셈 내림도
+  MSVC 쪽을 GCC의 산술 시프트에 맞추는 방식으로 일치시켰다. 정답이 GCC 쪽에 있다.
+  dedicated server를 나중에 Linux로 옮길 때도 g++ 경로가 그대로 이어진다.
+- **왜 MSVC를 지우지 않는가.** 서로 다른 컴파일러로 빌드한 서버·클라를 한 세션에 섞지 않으므로
+  (아래 참조) MSVC 경로가 깨져도 g++ 경로는 영향을 받지 않는다. 유지 비용은 작고,
+  Visual Studio 디버거와 "두 컴파일러가 같은 숫자를 내는가"를 비교해 볼 수 있다는 학습 가치가 남는다.
+- ⚠️ **예외 하나.** [Math/Internal.hpp](../../EngineCore/Math/Internal.hpp)의 `_MSC_VER` 분기는
+  g++ 테스트로 잡히지 않고, 틀리면 MSVC 빌드에서만 숫자가 조용히 달라진다. 이 파일을 고치면
+  `default`와 `msvc-debug` 양쪽에서 수학 테스트(`Math.Fixed64CompilerParityAtRoundingBoundaries` 포함)를 돌린다.
+
 ## 준비
 
 - Windows, CMake 3.23 이상. `cmake`와 `ctest`를 PATH에 추가한다.

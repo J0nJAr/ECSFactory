@@ -81,6 +81,12 @@ namespace EF {
             }
         }
 
+        /// @brief 엔티티(EntityManager) 상태를 복사 없이 읽는다. 결정론 해시용.
+        /// 수명 제약(다음 엔티티 생성·파괴까지만 유효)은 `EntityStateView` 주석 참조.
+        [[nodiscard]] EntityStateView ViewEntityState() const noexcept {
+            return m_entityManager.ViewState();
+        }
+
         /// @brief 엔티티(EntityManager) 상태만 스냅샷으로 뜬다. 컴포넌트는 포함하지 않는다.
         [[nodiscard]] EntitySnapshot CreateEntitySnapshot() const {
             return m_entityManager.CreateSnapshot();
@@ -99,6 +105,18 @@ namespace EF {
                 }
             }
             m_entityManager.Clear();
+        }
+
+        /// @brief TypeHash로 풀을 찾아 비운다(풀 자체는 남긴다). 없으면 아무 일도 하지 않는다.
+        /// 부분 스냅샷 적용(`World::ApplyPartialSnapshot`)이 풀을 통째로 갈아끼울 때 쓴다.
+        /// 와이어에서 온 것은 프로세스 로컬 index가 아니라 hash이므로 hash로 찾는다.
+        void ClearPool(TypeHash hash) {
+            for (auto& pool : m_pools) {
+                if (pool && pool->GetType().hash == hash) {
+                    pool->Clear();
+                    return;
+                }
+            }
         }
 
         [[nodiscard]] EntityId ResolveEntityId(EntityIndex index) const {

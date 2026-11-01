@@ -35,7 +35,7 @@ ECSFactory는 **서버 권위형 멀티플레이 + 결정론적 시뮬레이션*
 
 ### 문서 언어 규칙
 
-소유자는 **한국어 사용자**다. 사람이 읽는 것은 전부 **한국어**로 쓴다: 코드 주석, `README.md`, `docs/design/*`, `docs/blog/*`, 커밋 메시지, 새로 만드는 모든 마크다운. 명시적으로 요청받지 않는 한 이 저장소에 영어 문서를 만들지 않는다.
+소유자는 **한국어 사용자**다. 사람이 읽는 것은 전부 **한국어**로 쓴다: 코드 주석, `README.md`, `docs/design/*`, 커밋 메시지, 새로 만드는 모든 마크다운. 명시적으로 요청받지 않는 한 이 저장소에 영어 문서를 만들지 않는다.
 
 ### 주석 규약
 
@@ -52,10 +52,14 @@ ECSFactory는 **서버 권위형 멀티플레이 + 결정론적 시뮬레이션*
 툴체인은 **MSYS2의 MinGW g++**(`C:/msys64/ucrt64/bin/g++.exe`)이고, CMake 프리셋(`MinGW Makefiles` 제너레이터)으로 돌린다. 루트 `CMakeLists.txt`에 MSVC 분기가 있지만 기본 프리셋은 g++를 쓰므로, 실제로 켜져 있는 경고 세트는 `-Wall -Wextra`다.
 
 ```powershell
-cmake --preset default          # 구성 (x64-debug 상속). 그 외: x64-debug, x64-release
+cmake --preset default          # 구성 (x64-debug 상속). 그 외: x64-debug, x64-release, msvc-debug, msvc-release
 cmake --build --preset default  # 전체 빌드 → out/build/default/bin
 ctest --preset default          # 전체 테스트 (실패 시 출력 표시)
 ```
+
+**기준 툴체인은 g++다.** Visual Studio 2022 MSVC용 `msvc-debug`/`msvc-release` 프리셋은 디버거를 쓰기 위한 **보조 경로이고 CI가 검증하지 않는다** — 쓰기 전에 `msvc-debug` 테스트를 직접 돌리고, 깨져 있으면 고치되 g++ 경로를 막는 결함으로 취급하지 않는다. 근거는 [development-tools.md](docs/reference/development-tools.md)의 "기준 툴체인은 g++, MSVC는 보조" 절. MSVC 프리셋과 함께 개발 런처(`Launch-ECSFactory.cmd`, `tools/Start-DevLauncher.ps1`), VS Code 태스크·디버그 구성도 있다. 프리셋 표와 준비물은 [docs/reference/development-tools.md](docs/reference/development-tools.md)가 정본이다.
+
+> ⚠️ **MSVC와 g++는 같은 `Fixed64` 결과를 내야 한다.** 어느 컴파일러로 빌드해도 같은 시뮬레이션이어야 테스트·재현 결과를 서로 비교할 수 있다. 단, 서로 다른 컴파일러로 빌드한 서버·클라가 **한 세션에 섞이는 것은 보장하지 않는다** — 스냅샷이 trivial 컴포넌트의 메모리 배치를 그대로 싣고, 타입 이름 추출이 컴파일러별 경로(`__FUNCSIG__`/`__PRETTY_FUNCTION__`)라 두 컴파일러의 타입 해시가 같다는 보장이 없기 때문이다(실제로 다른지는 확인하지 않았다). 한 세션은 같은 프리셋으로 돌린다. [Math/Internal.hpp](EngineCore/Math/Internal.hpp)의 128비트 곱은 음수 소수부를 GCC의 산술 시프트처럼 **-∞ 방향으로 내리고**(0 방향 절삭이면 MSVC만 갈라진다), `_udiv128`에는 몫 overflow 예외를 피하려고 `high % divisor`를 넘긴다. 이 경로를 고칠 때는 두 컴파일러로 수학 테스트를 모두 돌린다.
 
 실행 파일은 `out/build/<preset>/bin/`에 떨어진다(`EngineCoreTests.exe`, `GameClient.exe`, `GameServer.exe`).
 
@@ -111,12 +115,10 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 
 - **[docs/design/roadmap.md](docs/design/roadmap.md) — 마일스톤 전체 계획.** 지금 무엇을 왜 그 순서로 만드는지가 여기 있다. "다음에 뭘 해야 하나"는 이 문서를 먼저 본다.
 - **[docs/reference/testing-guide.md](docs/reference/testing-guide.md) — 테스트 가이드.** 무엇을 어떻게 확인하는가. 로컬·다중 기기 실행, 결정론 대조, 지연·손실·디싱크 주입, 새 테스트를 쓸 때의 규칙(빨간불 먼저).
-- **[docs/reference/milestone-codes.md](docs/reference/milestone-codes.md) — 마일스톤 기호 사전.** `R2`·`N1`·`U8` 같은 기호가 무엇을 가리키고 지금 어떤 상태인지의 대조표. **이 기호는 저장소 안에서만 쓴다** — 블로그 글(`docs/blog/`)에는 뜻이 드러나는 말로 풀어 쓴다. 독자는 이 저장소를 볼 수 없다.
+- **[docs/reference/milestone-codes.md](docs/reference/milestone-codes.md) — 마일스톤 기호 사전.** `R2`·`N1`·`U8` 같은 기호가 무엇을 가리키고 지금 어떤 상태인지의 대조표. **이 기호는 저장소 안에서만 쓴다.** 외부 설명에는 뜻이 드러나는 말로 풀어 쓴다.
 - `docs/design/*.md` — 다음 에이전트·개발자를 대상으로 한 **핸드오프 스펙**: 근거, 불변식, 마일스톤 상태, 함정. 입력·동기화를 건드리기 전에 [docs/design/deterministic-input-lockstep.md](docs/design/deterministic-input-lockstep.md)를, 렌더링을 건드리기 전에 [docs/design/rendering-dx11.md](docs/design/rendering-dx11.md)를, UI를 건드리기 전에 [docs/design/ui-layer.md](docs/design/ui-layer.md)를 읽는다. 뒤의 둘은 **설계 대비 구현이 앞부분만 들어와 있다** — 렌더링은 R0~R6(창·device·카메라·ECS 연결·실제 입력), UI는 U3(앵커 레이아웃)까지다. 나머지는 아직 문서뿐이므로, 각 문서의 마일스톤 표에서 지금 어디까지 왔는지를 먼저 확인할 것.
-- `docs/blog/*.md` — 각 계층을 만든 순서대로 쓴 서술형 기록(05 패킷 → 06 동기화 상태머신 → 07 신뢰성 UDP → 08 lockstep → 09 결정론 스폰 → 10 렌더 타깃 분리·창 → 11 DX11 첫 픽셀 → 12 화면에서 결정론을 본다).
-  - ⚠️ **`docs/blog/`에 있다고 발행된 것은 아니다.** 티스토리 발행은 붙여넣기 수동 작업이라 저장소가 앞서간다. 2026-08-23 기준 발행분은 **9편까지**(`machamy.tistory.com/36`)이고 그 뒤에 복습편 두 개(`/37` 1~4편, `/38` 5~9편)가 있다. **10~12편은 미발행.**
-  - 이 숫자는 저장소가 알 수 없으므로 금방 낡는다. 확실하지 않으면 **소유자에게 묻거나 블로그를 직접 확인**할 것. 카테고리 페이지는 목록이 잘려 보일 수 있으니 최신 글 목록(블로그 첫 페이지)을 본다.
-  - 블로그 글을 쓰거나 고칠 때는 [docs/reference/writing-style.md](docs/reference/writing-style.md)의 문체 기준을 따르고 `python tools/check-writing-style.py --all-blog`로 검사한다. 설계 문서와 코드 주석은 이 기준의 대상이 아니다.
+- 블로그 원고(`docs/blog/`), 스킨(`blog/`), 전용 문체 기준·검사 도구는 로컬 파일이며 `.gitignore`로 제외한다. 엔진 작업에 함께 커밋하지 않는다.
+  - 티스토리(`machamy.tistory.com`) 발행 현황은 로컬 `docs/blog/README.md`에 적는다. 발행은 붙여넣기 수동 작업이라 로컬 원고와 발행본이 어긋날 수 있다. 확실하지 않으면 `https://machamy.tistory.com/rss`로 확인한다.
 
 `README.md`의 "작업 스케치" 섹션이 살아 있는 TODO 목록이다.
 
@@ -185,7 +187,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 
 ### 3. 프로토콜 — `NetworkManager`
 
-월드 리소스([NetworkManager.hpp](EngineCore/Network/NetworkManager.hpp))로, 연결 하나와 endpoint↔clientId 테이블, endpoint별 `ReliabilityChannel`을 소유한다. 패킷 타입([Packet.hpp](EngineCore/Network/Packet.hpp)): `Hello`, `TypeTable`, `WorldSnapshotRequest`, `WorldSnapshot`, `InputCommand`, `TickHash`, `ResyncRequest`, `Welcome`, `InputFrame`. 모든 타입에 static `Encode*`/`Decode*`가 있다(`NetUtils.hpp`의 `PacketWriter`/`PacketReader`로 네트워크 바이트 오더 직렬화. `Fixed64`는 `Raw()`로 나간다).
+월드 리소스([NetworkManager.hpp](EngineCore/Network/NetworkManager.hpp))로, 연결 하나와 endpoint↔clientId 테이블, endpoint별 `ReliabilityChannel`을 소유한다. 패킷 타입([Packet.hpp](EngineCore/Network/Packet.hpp)): `Hello`, `TypeTable`, `WorldSnapshotRequest`, `WorldSnapshot`, `InputCommand`, `TickHash`, `ResyncRequest`, `Welcome`, `InputFrame`, `PartialSnapshot`. 모든 타입에 static `Encode*`/`Decode*`가 있다(`NetUtils.hpp`의 `PacketWriter`/`PacketReader`로 네트워크 바이트 오더 직렬화. `Fixed64`는 `Raw()`로 나간다).
 
 > ⚠️ **와이어 버전에 관한 정확한 사실** (예전 문서에 틀린 내용이 있었다):
 > - 매직 넘버 `EFSY`는 **코드에 존재하지 않는다.** 설계 초안에만 있던 것이다.
@@ -206,9 +208,9 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 
 - **trivially-copyable** 컴포넌트만 스냅샷 대상이고, raw 바이트로 복사된다. 비trivial 컴포넌트는 제외된다.
 - 클라이언트는 타입마다 `World::RegisterSnapshotComponent<T>()`로 명시 등록해야 한다(trivially-copyable을 static_assert). `ApplySnapshot`은 레지스트리를 처음부터 재구성하고, `hash`/`size`/`alignment`/`isTrivial`/바이트 수가 안 맞는 타입은 **거부**한다.
-- 스냅샷은 **조인과 resync 전용**이다 — 매 tick 상태 스트리밍이 아니다(아래 lockstep 참조).
+- 스냅샷은 **조인과 resync 전용**이다 — 매 tick 상태 스트리밍이 아니다(아래 lockstep 참조). resync는 **부분 스냅샷이 먼저**다: 클라가 불일치를 본 tick의 해시 분해표를 보내면 서버가 어긋난 풀만 `PartialSnapshot`으로 보내고(`World::CreatePartialSnapshot` / `ApplyPartialSnapshot`, 전부 아니면 전무), 엔티티 할당이 갈라졌거나 부분 복구로 안 맞으면 전체 `WorldSnapshot`으로 폴백한다([partial-resync.md](docs/design/partial-resync.md)).
 - `ComponentSnapshot.entities`에는 `EntityIndex`만 실리고 **version은 실리지 않는다.** 따라서 컴포넌트가 `EntityId`로 다른 엔티티를 참조하면 왕복에서 살아남지 못한다. 복제되는 링크는 안정적인 도메인 id(현재는 `clientId`)로 걸어야 한다.
-- `World::ComputeHash()`(trivial 풀에 대한 FNV-1a)가 결정론 체크섬이고, `TickHash` 비교 → `ResyncRequest`를 구동한다. 풀 순회는 **`TypeInfo::hash` 오름차순**이다 — 프로세스 로컬인 `index` 순서로 돌면 타입 첫 사용 순서가 다른 두 프로세스가 같은 월드에서 다른 해시를 낸다. `RegisterPresentationComponent<T>()`로 등록된 클라 전용 표현 컴포넌트는 해시에서 빠진다.
+- `World::ComputeHash()`가 결정론 체크섬이다. 실제 계산은 `ComputeHashBreakdown()`이 층별로 한다 — `EntityManager` 상태 해시, trivial 풀마다의 해시, 그리고 그 둘에서 **유도한** 월드 해시(계산 경로는 하나뿐이다. 부분 resync가 풀 단위로 비교하기 위한 구조, [partial-resync.md](docs/design/partial-resync.md)). 월드 해시가 `TickHash` 비교 → `ResyncRequest`를 구동한다. 풀 순회는 **`TypeInfo::hash` 오름차순**이다 — 프로세스 로컬인 `index` 순서로 돌면 타입 첫 사용 순서가 다른 두 프로세스가 같은 월드에서 다른 해시를 낸다. `RegisterPresentationComponent<T>()`로 등록된 클라 전용 표현 컴포넌트는 해시에서 빠진다. 엔티티 할당은 뺄 방법이 없으므로 **어떤 peer도 월드 엔티티를 확정 경로 밖에서 만들거나 지우면 안 된다**(N4.1).
 
 ## 결정론 입력 lockstep
 
@@ -227,7 +229,9 @@ tick당 흐름:
         InputFrame(tick, events, confirmed) ──reliable──▶ 모든 클라
         TickHash(tick, world.ComputeHash()) ──sequenced──▶ 모든 클라
 클라:   InputFrame을 버퍼링 → clientSimTick+1 프레임이 있으면 events → inputs 순으로 적용하고 ++clientSimTick
-        TickHash 불일치 → ResyncRequest → 새 WorldSnapshot
+        TickHash 불일치 → ResyncRequest(그 tick의 해시 분해표)
+        서버: 어긋난 풀만 PartialSnapshot(X = tick-1)   또는   전체 WorldSnapshot(폴백)
+        클라: clientSimTick == X에서 풀을 갈아끼우고 즉시 worldHash 검증 → 실패하면 전체 요청
 ```
 
 `NetworkSyncSystem`([NetworkSyncSystem.hpp](EngineCore/Network/NetworkSyncSystem.hpp))이 양쪽 역할(`NetworkSyncMode::Client` / `Server`)의 이 상태 머신을 들고 있는 `ISystem`이고, `Hello → Welcome → TypeTable → WorldSnapshot` 핸드셰이크도 여기 있다. `ApplyConfirmedInputs`([Gameplay/PlayerMovement.hpp](EngineCore/Gameplay/PlayerMovement.hpp))는 각 입력의 `clientId`를 `PlayerControl` 엔티티에 매칭해서 그 `Transform`을 순수 `Fixed64`로 옮긴다.
@@ -263,7 +267,8 @@ tick당 흐름:
 - 📌 **클라 전용 표현 컴포넌트는 `RegisterPresentationComponent<T>()`로 해시에서 뺀다.** 서버엔 그 풀이 없어서, 빼지 않으면 매 tick 불일치 → 무한 resync가 된다. 기본값은 "해시에 포함"이다(깜빡 잊으면 시끄럽게 실패하는 쪽).
 - 📌 **`View::ForEach`는 `EntityId`가 아니라 `EntityIndex`를 준다.** `EntityId`로 받아도 암묵 변환으로 컴파일되지만 version이 0인 가짜 id가 된다. id가 필요하면 range-for를 쓴다.
 - 📌 **클라 생존 판정은 전송 계층(`PumpConnection`)에서, 등록 시점에 반드시 현재 tick을 찍는다.** 조용한 클라는 ack만 보내는데 ack만 든 데이터그램은 `TryReceive`로 올라오지 않는다. 그리고 등록 시 0으로 두면 오래 떠 있던 서버가 신규 접속을 즉시 쫓아낸다(`Network.ClientCanJoinLongRunningServer`). 타임아웃은 250 tick(5초).
-- 📌 **`kReliabilityVersion`은 2다.** `InputFrame`에 세션 이벤트가 붙어 앱 레코드 배치가 바뀌었다. 층 구분상 앱 계층 버전(Hello/Welcome)이 맞는 자리지만 그게 없어서 여기서 막는다.
+- 📌 **부분 스냅샷은 `clientSimTick == X`(= 스냅샷의 tick)에서만 끼운다.** 풀은 서버 tick X 시점의 값이라, 클라가 뒤처진 상태에서 끼우면 서로 다른 시점의 풀이 한 월드에 섞인다. 그래서 보류했다가 확정 프레임으로 X까지 따라온 순간, 다음 프레임 적용 **전에** 끼운다. 그리고 끼운 직후 서버가 실어 보낸 X 시점 `worldHash`와 비교한다 — 어긋남은 번지므로 서버가 고른 풀만으로 부족할 수 있다. `Network.InsufficientPartialSnapshotFallsBackToFull`이 지킨다.
+- 📌 **`kReliabilityVersion`은 3이다.** 2: `InputFrame`에 세션 이벤트가 붙어 앱 레코드 배치가 바뀌었다. 3: `ResyncRequest`에 해시 분해표, `PartialSnapshot` 패킷 추가(부분 resync). 층 구분상 앱 계층 버전(Hello/Welcome)이 맞는 자리지만 그게 없어서 여기서 막는다.
 
 아직 **미완성 / 스텁**인 것:
 
@@ -273,7 +278,6 @@ tick당 흐름:
 - **마우스 조준은 변환 계층만 있다.** `InputMapping`이 픽셀 → `Fixed64` 경계를 처리하지만 시뮬레이션(`ApplyConfirmedInputs`)이 아직 `aimYaw`/`aimPitch`를 소비하지 않는다. 소비를 시작할 때 서버 쪽 pitch 재클램프가 필요하다.
 - **입력이 시스템 전역 키 상태(`GetAsyncKeyState`)를 읽는다.** 창이 여럿이면 `IWindow::HasFocus()`로 걸러야 한다. 근본 해결은 창 메시지 기반 입력(U6와 함께).
 - **해제는 파괴다.** 나갔다 들어오면 새 `clientId` + 새 캐릭터가 된다. 설계 의도는 `Dormant`(얼리기)이고 세션/영속 플레이어/캐릭터 분리(§8)와 함께 한다.
-- **`ComputeHash()`에 `EntityManager` 상태가 아직 안 들어간다.** N2가 끝났으므로 이제 넣어도 된다 — 넣으면 엔티티 할당이 갈라지는 것을 바로 잡는다.
 - **`ResyncRequest`에 백오프가 없다.** in-flight 하나로 제한해서 폭주는 막혔지만, 복구가 반복 실패하는 상황에서 간격을 늘리지는 않는다.
 - **앱 계층 버전 검사 없음.** `Packet.hpp`의 `kProtocolVersion`은 여전히 아무도 읽지 않는다.
 - `SystemRegistry::SortSystems()`는 TODO. 시스템은 등록 순서대로 실행된다 — 클라이언트는 `LossyLinkPumpSystem → NetworkSyncSystem`, `PlayerVisualSystem → RenderSystem` 순서에 실제로 의존한다.
@@ -320,4 +324,3 @@ tick당 흐름:
 ## 사용할 수 있는 스킬
 
 - `explain-diff-html` — 현재 diff / 브랜치 / PR을 배경·직관·코드 워크스루·퀴즈 5문항으로 설명하는 자체완결형 HTML을 만든다. 출력은 `~/Documents/explanations/YYYY-MM-DD-explanation-<slug>.html`(저장소 밖). 학습용 프로젝트이므로 큰 변경을 끝낸 뒤 이걸로 복습 자료를 만들면 좋다.
-- `blog-post` — 개발 기록을 "[C++ ECS 게임 만들기]" 시리즈의 다음 편으로 쓴다. 정본은 `docs/blog/NN_slug.md`, 티스토리 붙여넣기용은 `.claude/tmp/blog-NN-tistory.md`. 설계 문서와 목적이 다르다 — 설계 문서는 다음 사람이 이어서 구현하기 위한 스펙이고, 블로그는 만든 순서대로 읽는 서술형 기록이다. **코드를 직접 읽어 사실 확인을 하고**, [writing-style.md](docs/reference/writing-style.md) 기준을 `tools/check-writing-style.py`로 검사한 뒤 커밋한다.
