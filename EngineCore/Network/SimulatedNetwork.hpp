@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -33,10 +34,21 @@ namespace EF::Network {
         void SetDuplicate(float rate) noexcept;    // [0,1) 확률로 중복 전달
         void SetReorder(float rate, uint32_t window = 4) noexcept; // 재정렬 확률/윈도우
 
+        // host마다 받은 편지함(아직 ReceiveFrom으로 꺼내지 않은 데이터그램)의 바이트 상한.
+        // 넘치면 새로 도착한 데이터그램을 버린다(꼬리 버림) — 실제 UDP 소켓의 수신 버퍼(SO_RCVBUF)가
+        // 꽉 찼을 때와 같다. 0이면 무제한(기본값).
+        //
+        // 왜 필요한가: 이게 없으면 한 tick에 데이터그램 수천 개를 쏟아붓는 송신자도 테스트에서는
+        // 멀쩡해 보인다. 실제 UDP에서는 수신 버퍼 꼬리가 버려지고, 재전송도 같은 폭발이라 같은
+        // 꼬리가 계속 버려질 수 있다(docs/design/large-record-transport.md §2).
+        void SetInboxCapacity(std::size_t bytes) noexcept;
+
     private:
         struct State {
             std::mutex mutex;
             std::unordered_map<Endpoint, std::deque<Datagram>> inboxes;
+            std::unordered_map<Endpoint, std::size_t> inboxBytes;  // inboxes의 바이트 합(용량 검사용)
+            std::size_t inboxCapacity = 0;                          // 0 = 무제한
             uint64_t rng = 0;
             float lossRate = 0.0f;
             float duplicateRate = 0.0f;

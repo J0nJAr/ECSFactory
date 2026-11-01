@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "Components/PlayerControl.hpp"
@@ -13,6 +15,7 @@
 #include "Network/NetworkSyncSystem.hpp"
 #include "Network/ReliabilityChannel.hpp"
 #include "Network/SimulatedNetwork.hpp"
+#include "Network/UDPConnection.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 큰 레코드 전송 (docs/design/large-record-transport.md)
@@ -183,14 +186,171 @@ TEST_CASE(LargeRecord, ReceiverIgnoresSequencesFarAheadOfWindow) {
 
     // 정상 흐름: 시퀀스 0(이미 만든 것)부터 kFarSequence까지 순서대로 보낸다.
     // 수신 측이 앞 레코드를 소화해야 창이 앞으로 가므로 한 번에 하나씩 보내고 받는다.
+    // 받는 쪽의 ack도 송신자에게 돌려준다 — 안 돌려주면 송신자는 받은 것까지 계속 재전송하고,
+    // 페이싱 예산(N4.6)을 그 재전송이 먹어 새 레코드가 나가지 못한다. 실제 채널은 ack를 받는다.
     ReliabilityChannel replay;
+    std::vector<std::vector<uint8_t>> ackSink;
     for (uint32_t i = 0; i <= kFarSequence; ++i) {
         const std::vector<uint8_t> record{ static_cast<uint8_t>(i & 0xFF) };
         EXPECT_TRUE(replay.Enqueue(Delivery::Reliable, record));
         for (const auto& datagram : replay.Flush(1 + i)) {
             receiver.OnReceive(datagram, delivered);
         }
+        for (const auto& ack : receiver.Flush(1 + i)) {
+            replay.OnReceive(ack, ackSink);
+        }
     }
 
     EXPECT_EQ(delivered.size(), static_cast<std::size_t>(kFarSequence) + 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// N4.6 — 페이싱. 큰 신뢰 레코드를 한 tick에 쏟아붓지 않는다.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+    // 서버 월드를 엔티티 entityCount개로 채우고 조인을 끝까지 굴린다. 조인에 걸린 tick 수를
+    // 돌려준다(0이면 예산 안에 스냅샷을 받지 못했다).
+    uint64_t JoinLargeWorld(EF::Network::SimulatedNetwork& net, int entityCount, uint64_t budgetTicks) {
+        using EF::Network::Endpoint;
+        const Endpoint serverEp = Endpoint::Memory(901);
+        const Endpoint clientEp = Endpoint::Memory(2);
+        auto serverHost = net.CreateHost(serverEp);
+        auto clientHost = net.CreateHost(clientEp, serverEp);
+
+        EF::World serverWorld;
+        serverWorld.RegisterSnapshotComponent<EF::Transform>();
+        serverWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+        for (int i = 0; i < entityCount; ++i) {
+            const EF::EntityId entity = serverWorld.CreateEntity();
+            serverWorld.AddComponent<EF::Transform>(entity, EF::Transform{
+                .position = EF::Vector3(i, 0, 0),
+                .rotation = EF::Quaternion::Identity()
+            });
+        }
+        serverWorld.AddResource<EF::NetworkManager>(serverHost);
+        serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+        EF::World clientWorld;
+        clientWorld.RegisterSnapshotComponent<EF::Transform>();
+        clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+        clientWorld.AddResource<EF::NetworkManager>(clientHost);
+        EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+        const EF::Fixed64 dt = FixedTickDelta();
+        for (uint64_t tick = 1; tick <= budgetTicks; ++tick) {
+            clientWorld.FixedUpdate(dt, tick);
+            serverWorld.FixedUpdate(dt, tick);
+            if (clientSync.HasSnapshot()) {
+                return tick;
+            }
+        }
+        return 0;
+    }
+}
+
+// 수신 버퍼가 64KB인 링크에서 1 MiB 넘는 스냅샷으로 조인한다.
+//
+// 페이싱이 없으면 서버가 조각 ~1,000개를 한 tick에 쏟고, 버퍼에 들어가는 앞쪽 ~60개만 남고
+// 나머지는 버려진다. 재전송도 같은 순서의 같은 폭발이라 같은 꼬리가 계속 버려져 영영 완성되지
+// 않는다(수정 전 실측: 400 tick 안에 조인 실패). 페이싱은 tick당 보내는 조각 수를 버퍼 안으로 묶는다.
+TEST_CASE(LargeRecord, MegabyteSnapshotJoinsThroughSmallReceiveBuffer) {
+    EF::Network::SimulatedNetwork net(20261102);
+    net.SetInboxCapacity(64 * 1024);
+
+    const uint64_t ticks = JoinLargeWorld(net, 18000, 400);  // Transform 56바이트 × 18000 ≈ 1 MiB
+    EXPECT_TRUE(ticks != 0);
+}
+
+// 같은 조건 + 손실 10%. 페이싱과 재전송이 함께 돌아야 한다.
+TEST_CASE(LargeRecord, MegabyteSnapshotJoinsThroughSmallBufferAndLoss) {
+    EF::Network::SimulatedNetwork net(20261103);
+    net.SetInboxCapacity(64 * 1024);
+    net.SetLoss(0.10f);
+
+    EXPECT_TRUE(JoinLargeWorld(net, 18000, 600) != 0);
+}
+
+// 채널 단위: 한 tick에 내보내는 신뢰 조각 수는 예산을 넘지 않고, 여러 tick에 걸쳐 레코드를
+// 끝까지 보낸다. 다 보내기 전에는 앞부분 재전송을 시작하지 않는다(재전송 간격은 마지막 조각을
+// 보낸 뒤부터 센다).
+TEST_CASE(LargeRecord, ReliableFragmentsArePacedPerTick) {
+    ReliabilityChannel sender;
+    constexpr std::size_t kFragments = EF::Network::kReliableFragmentBudgetPerTick * 3 + 5;
+    const std::vector<uint8_t> big(kFragments * EF::Network::kFragmentSize, 0x7E);
+    EXPECT_TRUE(sender.Enqueue(Delivery::Reliable, big));
+
+    ReliabilityChannel receiver;
+    std::vector<std::vector<uint8_t>> delivered;
+    std::size_t totalDatagrams = 0;
+    uint64_t tick = 1;
+    for (; tick <= 20 && delivered.empty(); ++tick) {
+        // 같은 tick에 Flush가 여러 번 불려도(SendPacket마다 즉시 flush한다) 예산은 tick 단위다.
+        std::vector<std::vector<uint8_t>> datagrams = sender.Flush(tick);
+        std::vector<std::vector<uint8_t>> again = sender.Flush(tick);
+        datagrams.insert(datagrams.end(), again.begin(), again.end());
+
+        EXPECT_TRUE(datagrams.size() <= EF::Network::kReliableFragmentBudgetPerTick);
+        totalDatagrams += datagrams.size();
+        for (const auto& datagram : datagrams) {
+            receiver.OnReceive(datagram, delivered);
+        }
+    }
+
+    EXPECT_EQ(delivered.size(), std::size_t{ 1 });
+    // 무손실이므로 재전송 없이 정확히 조각 수만큼만 나가야 한다(첫 패스 도중 재전송이 섞이면 늘어난다).
+    EXPECT_EQ(totalDatagrams, kFragments);
+}
+
+// 실제 UDP 루프백에서 1 MiB 넘는 스냅샷으로 조인한다. 시뮬 링크의 "수신 버퍼 용량"이
+// 실제 소켓의 동작을 제대로 흉내 내는지, 그리고 페이싱 + 소켓 버퍼 확대가 실제로 통하는지를
+// 진짜 소켓으로 확인한다.
+//
+// tick 사이에 짧게 잠든다. 루프백이라도 데이터그램 전달은 비동기라, 잠들지 않고 돌면 받는 쪽이
+// 아직 도착하지 않은 데이터그램을 기다리지 않고 지나가 tick 수가 의미를 잃는다.
+// 포트는 범위 안에서 비어 있는 것을 고른다(병렬 실행·다른 프로세스와 충돌 방지).
+TEST_CASE(LargeRecord, MegabyteSnapshotJoinsOverRealUdpLoopback) {
+    auto serverConnection = std::make_shared<EF::Network::UDPConnection>();
+    uint16_t port = 0;
+    for (uint16_t candidate = 47100; candidate < 47200; ++candidate) {
+        if (serverConnection->Bind(candidate)) {
+            port = candidate;
+            break;
+        }
+    }
+    EXPECT_TRUE(port != 0);
+    if (port == 0) {
+        return;
+    }
+
+    auto clientConnection = std::make_shared<EF::Network::UDPConnection>();
+    clientConnection->Connect("127.0.0.1", port);
+
+    EF::World serverWorld;
+    serverWorld.RegisterSnapshotComponent<EF::Transform>();
+    serverWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+    for (int i = 0; i < 18000; ++i) {
+        const EF::EntityId entity = serverWorld.CreateEntity();
+        serverWorld.AddComponent<EF::Transform>(entity, EF::Transform{
+            .position = EF::Vector3(i, 0, 0),
+            .rotation = EF::Quaternion::Identity()
+        });
+    }
+    serverWorld.AddResource<EF::NetworkManager>(serverConnection);
+    serverWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Server);
+
+    EF::World clientWorld;
+    clientWorld.RegisterSnapshotComponent<EF::Transform>();
+    clientWorld.RegisterSnapshotComponent<EF::PlayerControl>();
+    clientWorld.AddResource<EF::NetworkManager>(clientConnection);
+    EF::NetworkSyncSystem& clientSync = clientWorld.RegisterSystem<EF::NetworkSyncSystem>(EF::NetworkSyncMode::Client);
+
+    const EF::Fixed64 dt = FixedTickDelta();
+    for (uint64_t tick = 1; tick <= 400 && !clientSync.HasSnapshot(); ++tick) {
+        clientWorld.FixedUpdate(dt, tick);
+        serverWorld.FixedUpdate(dt, tick);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    EXPECT_TRUE(clientSync.HasSnapshot());
+    EXPECT_EQ(clientSync.AppliedSnapshotCount(), uint64_t{ 1 });
 }

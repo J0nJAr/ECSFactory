@@ -171,7 +171,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 
 - `MemoryConnection` — 같은 프로세스(host/singleplayer). `CreatePair()`가 양쪽 끝을 돌려준다.
 - `UDPConnection` — 원격 클라이언트 ↔ dedicated server(포트 `6780`). `recvfrom`의 sender를 `Endpoint`로 노출한다.
-- `SimulatedNetwork`([SimulatedNetwork.hpp](EngineCore/Network/SimulatedNetwork.hpp)) — **테스트 전용** 인메모리 허브. 시드 기반이라 재현 가능한 손실·중복·재정렬을 주입한다. 참가자마다 `CreateHost(self, defaultPeer)`. 수렴 테스트가 서버 + N 클라이언트를 손실 링크 위에서 돌리는 방식이 이것이다.
+- `SimulatedNetwork`([SimulatedNetwork.hpp](EngineCore/Network/SimulatedNetwork.hpp)) — **테스트 전용** 인메모리 허브. 시드 기반이라 재현 가능한 손실·중복·재정렬을 주입하고, `SetInboxCapacity`로 수신 버퍼 넘침(꼬리 버림)도 흉내 낸다. 기본값은 버퍼 무제한이라 **큰 버스트 문제는 용량을 걸어야만 보인다.** 참가자마다 `CreateHost(self, defaultPeer)`. 수렴 테스트가 서버 + N 클라이언트를 손실 링크 위에서 돌리는 방식이 이것이다.
 
 ### 2. 신뢰성 — `ReliabilityChannel`
 
@@ -183,7 +183,7 @@ powershell -File tools/Create-CppArtifact.ps1 -Target EngineRender -Kind pair -R
 | `Sequenced` (1) | 비신뢰, 최신만(구식은 폐기) | `TickHash` |
 | `Unreliable` (2) | 비신뢰, 전부 전달 | `InputCommand`(클라→서버. 중복 제거는 앱 계층에서) |
 
-와이어 크기 상수는 `ReliabilityChannel.hpp`에 있다: 조각 1024바이트, 데이터그램 페이로드 최대 1200바이트, **신뢰 레코드 상한 16MiB**(`kMaxReliableRecordBytes`), **비신뢰 레코드는 데이터그램 하나**(`kMaxUnfragmentedRecordBytes`), 수신 재조립 창 256 시퀀스. 상한 검사는 `ReliabilityChannel::Enqueue`가 하고 `SendPacket`은 결과를 돌려준다. 재전송 간격(4 tick)은 `.cpp`에 있다. ⚠️ 큰 신뢰 레코드는 아직 한 tick에 버스트로 나가고 손실 시 레코드 전체를 재전송한다 — 실제 UDP 수신 버퍼에서 꼬리가 버려질 수 있다(N4.6에서 페이싱, [large-record-transport.md](docs/design/large-record-transport.md)). 데이터그램 헤더는 `[version][누적 ack]` 뒤에 채널 메시지들이 붙는 형태다.
+와이어 크기 상수는 `ReliabilityChannel.hpp`에 있다: 조각 1024바이트, 데이터그램 페이로드 최대 1200바이트, **신뢰 레코드 상한 16MiB**(`kMaxReliableRecordBytes`), **비신뢰 레코드는 데이터그램 하나**(`kMaxUnfragmentedRecordBytes`), 수신 재조립 창 256 시퀀스. 상한 검사는 `ReliabilityChannel::Enqueue`가 하고 `SendPacket`은 결과를 돌려준다. 재전송 간격(4 tick)은 `.cpp`에 있다. **신뢰 조각은 상대당 tick당 48개까지만 나간다**(페이싱, `kReliableFragmentBudgetPerTick`) — 큰 레코드는 여러 tick에 걸쳐 한 패스를 보내고, 재전송 간격은 패스가 끝난 tick부터 센다. 페이싱 없이 쏟아부으면 실제 UDP 수신 버퍼가 꼬리를 버려 1 MiB 스냅샷이 영영 완성되지 않는다(실측, [large-record-transport.md](docs/design/large-record-transport.md) §7). 손실 시 여전히 레코드 전체를 재전송한다(선택적 ack는 보류). 데이터그램 헤더는 `[version][누적 ack]` 뒤에 채널 메시지들이 붙는 형태다.
 
 ### 3. 프로토콜 — `NetworkManager`
 

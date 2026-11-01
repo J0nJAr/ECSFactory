@@ -68,12 +68,30 @@ namespace EF::Network {
         // 1) 이번에 내보낼 메시지 블롭을 모은다.
         std::vector<std::vector<uint8_t>> messages;
 
-        // 신뢰: 미전송 또는 재전송 시점이 된 것. 조각으로 나눠 담는다.
+        // 신뢰: 미전송 또는 재전송 시점이 된 것을 조각으로 나눠 담되, tick당 예산까지만(페이싱).
+        //
+        // ⚠️ 예전에는 레코드의 조각을 전부 그 자리에서 내보냈다. 1 MiB 스냅샷이면 데이터그램 ~1,000개가
+        //    한 tick에 쏟아지고, 실제 UDP 수신 버퍼(64KB 안팎)는 앞쪽 ~60개만 담고 꼬리를 버린다.
+        //    재전송도 같은 순서의 같은 폭발이라 같은 꼬리가 계속 버려져 영영 완성되지 않았다
+        //    (LargeRecord.MegabyteSnapshotJoinsThroughSmallReceiveBuffer, large-record-transport.md §2).
+        if (currentTick != m_budgetTick) {
+            m_budgetTick = currentTick;
+            m_budgetUsed = 0;
+        }
+
         for (OutgoingReliable& outgoing : m_outgoingReliable) {
-            const bool resendDue = outgoing.everSent &&
-                (currentTick - outgoing.lastSentTick) >= kResendIntervalTicks;
-            if (outgoing.everSent && !resendDue) {
-                continue;
+            if (m_budgetUsed >= kReliableFragmentBudgetPerTick) {
+                break;  // 이번 tick 예산 소진. 나머지는 다음 tick에 이어서 보낸다.
+            }
+
+            if (!outgoing.passInProgress) {
+                const bool due = !outgoing.everSent ||
+                    (currentTick - outgoing.lastSentTick) >= kResendIntervalTicks;
+                if (!due) {
+                    continue;
+                }
+                outgoing.passInProgress = true;
+                outgoing.nextFragment = 0;
             }
 
             const std::size_t recordSize = outgoing.record.size();
@@ -81,7 +99,9 @@ namespace EF::Network {
                 ? 1
                 : (recordSize + kFragmentSize - 1) / kFragmentSize;
 
-            for (std::size_t index = 0; index < fragmentCount; ++index) {
+            for (; outgoing.nextFragment < fragmentCount && m_budgetUsed < kReliableFragmentBudgetPerTick;
+                 ++outgoing.nextFragment, ++m_budgetUsed) {
+                const std::size_t index = outgoing.nextFragment;
                 const std::size_t offset = index * kFragmentSize;
                 const std::size_t length = (recordSize - offset) < kFragmentSize
                     ? (recordSize - offset)
@@ -97,8 +117,12 @@ namespace EF::Network {
                 messages.push_back(writer.Take());
             }
 
-            outgoing.everSent = true;
-            outgoing.lastSentTick = currentTick;
+            if (outgoing.nextFragment == fragmentCount) {
+                // 패스 완료. 재전송 간격은 여기서부터 센다(OutgoingReliable::lastSentTick 주석).
+                outgoing.passInProgress = false;
+                outgoing.everSent = true;
+                outgoing.lastSentTick = currentTick;
+            }
         }
 
         // 시퀀스드: 한 번만 보내고 비운다.

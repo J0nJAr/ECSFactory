@@ -28,12 +28,23 @@ namespace EF::Network {
             return;
         }
 
+        // 수신 버퍼가 꽉 찼으면 새로 온 것을 버린다(꼬리 버림). SetInboxCapacity 주석 참조.
+        std::size_t& queuedBytes = inboxBytes[target];
+        auto fits = [&]() {
+            return inboxCapacity == 0 || queuedBytes + bytes.size() <= inboxCapacity;
+        };
+        if (!fits()) {
+            return;
+        }
+
         Datagram datagram{ from, std::vector<uint8_t>(bytes.begin(), bytes.end()) };
         inboxes[target].push_back(datagram);
+        queuedBytes += bytes.size();
 
-        // 중복: 확률적으로 한 번 더 넣는다.
-        if (duplicateRate > 0.0f && NextFloat() < duplicateRate) {
+        // 중복: 확률적으로 한 번 더 넣는다(중복본도 버퍼를 차지한다).
+        if (duplicateRate > 0.0f && NextFloat() < duplicateRate && fits()) {
             inboxes[target].push_back(std::move(datagram));
+            queuedBytes += bytes.size();
         }
     }
 
@@ -58,6 +69,7 @@ namespace EF::Network {
 
         Datagram datagram = std::move(inbox[index]);
         inbox.erase(inbox.begin() + static_cast<std::ptrdiff_t>(index));
+        inboxBytes[self] -= datagram.bytes.size();
         return datagram;
     }
 
@@ -92,6 +104,11 @@ namespace EF::Network {
 
     void SimulatedNetwork::SetDuplicate(float rate) noexcept {
         m_state->duplicateRate = rate;
+    }
+
+    void SimulatedNetwork::SetInboxCapacity(std::size_t bytes) noexcept {
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        m_state->inboxCapacity = bytes;
     }
 
     void SimulatedNetwork::SetReorder(float rate, uint32_t window) noexcept {

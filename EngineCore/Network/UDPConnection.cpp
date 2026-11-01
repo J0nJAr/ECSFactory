@@ -5,6 +5,14 @@ namespace EF::Network {
     namespace {
         constexpr std::size_t kMaxDatagramSize = 65536;
 
+        // 소켓 송수신 버퍼 크기 요청값. Windows 기본값(64KB 안팎)은 서버가 여러 클라에 동시에 큰
+        // 스냅샷을 보낼 때의 버스트를 못 담는다. 신뢰 채널의 페이싱(kReliableFragmentBudgetPerTick,
+        // 상대당 tick당 ~50KB)이 1차 방어선이고, 이건 그 위의 여유다(large-record-transport.md §4.2).
+        //
+        // ⚠️ 요청일 뿐이다. OS가 더 작게 잡거나 거부할 수 있고, 그래도 동작은 해야 한다 —
+        //    그래서 실패를 무시한다. 페이싱 예산이 기본 버퍼 안에 들어가도록 잡혀 있는 이유다.
+        constexpr int kSocketBufferBytes = 1 << 20;  // 1 MiB
+
         bool EnsureWinsockInitialized() {
             static const bool initialized = []() {
                 WSADATA data{};
@@ -22,6 +30,9 @@ namespace EF::Network {
         m_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (m_socket != INVALID_SOCKET) {
             SetNonBlocking();
+            const int bufferBytes = kSocketBufferBytes;
+            setsockopt(m_socket, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&bufferBytes), sizeof(bufferBytes));
+            setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&bufferBytes), sizeof(bufferBytes));
         }
     }
 
